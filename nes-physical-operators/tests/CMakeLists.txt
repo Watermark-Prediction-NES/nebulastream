@@ -20,6 +20,12 @@ add_nes_physical_operator_test(EmitPhysicalOperatorTest EmitPhysicalOperatorTest
 add_nes_physical_operator_test(AndOrPhysicalFunctionTest AndOrPhysicalFunctionTest.cpp)
 add_nes_physical_operator_test(SliceAssignerTest SliceAssignerTest.cpp)
 add_nes_physical_operator_test(SliceCacheTest SliceCacheTest.cpp)
+add_nes_physical_operator_test(WatermarkPredictorBehaviourTest WatermarkPredictorBehaviourTest.cpp)
+target_include_directories(WatermarkPredictorBehaviourTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_nes_physical_operator_test(EwmaWatermarkPredictorTest EwmaWatermarkPredictorTest.cpp)
+target_include_directories(EwmaWatermarkPredictorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_nes_physical_operator_test(KalmanWatermarkPredictorTest KalmanWatermarkPredictorTest.cpp)
+target_include_directories(KalmanWatermarkPredictorTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 if (ENABLE_IREE_TESTS)
     add_definitions(-DINFERENCE_TEST_DATA="${CMAKE_SOURCE_DIR}/nes-inference/tests/testdata")
