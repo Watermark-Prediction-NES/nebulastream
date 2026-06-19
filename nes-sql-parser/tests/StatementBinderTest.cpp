@@ -93,7 +93,7 @@ TEST_F(StatementBinderTest, BindQuery)
     /// This test only checks that the input was detected as a query, for more detailed testing of the QueryBinder
     /// see the AntlrSQLQueryParserTest and the Systests
     /// In the future this will require setting up the source catalog correctly as well
-    const std::string queryString = "SELECT a FROM inputStream WHERE b < UINT32(5) INTO outputStream";
+    const std::string queryString = "SELECT id, text FROM input INTO output";
     const auto statement = binder->parseAndBindSingle(queryString);
     ASSERT_TRUE(statement.has_value());
     ASSERT_TRUE(std::holds_alternative<QueryStatement>(*statement));
@@ -381,6 +381,64 @@ TEST_F(StatementBinderTest, BindCreateSinkWithQualifiedColumns)
     ASSERT_EQ(actualSink.getSinkType(), "File");
     ASSERT_EQ(actualSink.getFromConfig(ConfigParametersFile::FILE_PATH), "/dev/null");
     ASSERT_EQ(actualSink.getFromConfig(SinkDescriptor::OUTPUT_FORMAT), "CSV");
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillEnabledTrue)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET (TRUE AS SPILL.ENABLED)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    if (!statement.has_value())
+    {
+        FAIL() << "parse failed: " << statement.error().what();
+    }
+    ASSERT_TRUE(statement.has_value());
+    ASSERT_TRUE(std::holds_alternative<QueryStatement>(*statement));
+    const auto& spillConfig = std::get<QueryStatement>(*statement).spillConfig;
+    ASSERT_TRUE(spillConfig.has_value());
+    EXPECT_TRUE(spillConfig->enabled);
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillEnabledFalse)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET (FALSE AS SPILL.ENABLED)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_TRUE(statement.has_value());
+    ASSERT_TRUE(std::holds_alternative<QueryStatement>(*statement));
+    const auto& spillConfig = std::get<QueryStatement>(*statement).spillConfig;
+    ASSERT_TRUE(spillConfig.has_value());
+    EXPECT_FALSE(spillConfig->enabled);
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillEnabledRejectsNonBool)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET ('yes' AS SPILL.ENABLED)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_FALSE(statement.has_value());
+    EXPECT_EQ(statement.error().code(), ErrorCode::InvalidQuerySyntax);
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillPolicyPredictorAndBackend)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output "
+                                    "SET (TRUE AS SPILL.ENABLED, 'predictive' AS SPILL.POLICY, "
+                                    "'kalman' AS SPILL.PREDICTOR, 'local-file' AS SPILL.BACKEND)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_TRUE(statement.has_value());
+    ASSERT_TRUE(std::holds_alternative<QueryStatement>(*statement));
+    const auto& spillConfig = std::get<QueryStatement>(*statement).spillConfig;
+    ASSERT_TRUE(spillConfig.has_value());
+    EXPECT_TRUE(spillConfig->enabled);
+    EXPECT_EQ(spillConfig->policyName, "predictive");
+    EXPECT_EQ(spillConfig->predictorName, "kalman");
+    EXPECT_EQ(spillConfig->storageBackendName, "local-file");
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillPolicyRejectsNonString)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET (42 AS SPILL.POLICY)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_FALSE(statement.has_value());
+    EXPECT_EQ(statement.error().code(), ErrorCode::InvalidQuerySyntax);
 }
 
 TEST_F(StatementBinderTest, BindDropQuery)

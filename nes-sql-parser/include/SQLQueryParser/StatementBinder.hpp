@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 #include <AntlrSQLParser.h>
+#include <Configurations/SpillConfiguration.hpp>
 #include <DataTypes/Schema.hpp>
 #include <Identifiers/Identifiers.hpp>
 #include <Identifiers/NESStrongType.hpp>
@@ -120,6 +121,10 @@ struct QueryStatement
 {
     LogicalPlan plan;
     std::optional<DistributedQueryId> id;
+    /// Per-query overrides parsed from `SET (SPILL.* AS ...)`. nullopt (no SPILL options given) means
+    /// "use engine defaults"; populated replaces the engine defaults wholesale — SPILL.* keys not
+    /// listed fall back to the SpillConfiguration POD's own field defaults, not the worker defaults.
+    std::optional<SpillConfiguration> spillConfig;
 };
 
 struct ExplainQueryStatement

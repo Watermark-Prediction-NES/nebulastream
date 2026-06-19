@@ -14,34 +14,36 @@
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <SliceStore/Spill/SpillConfiguration.hpp>
+#include <string>
+#include <Configurations/SpillConfiguration.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
-#include <SliceCacheConfiguration.hpp>
 
 namespace NES
 {
 
 class AbstractBufferProvider;
 
-/// Single entry point for constructing slice stores. When spill is disabled (default), returns a
-/// plain DefaultTimeBasedSliceStore. When enabled, returns a SpillingTimeBasedSliceStore decorated
-/// over a DefaultTimeBasedSliceStore with policy/backend/sensor resolved from their registries.
+/// Single entry point for decorating a slice store with spilling. When spill is disabled (default),
+/// the inner store is returned unchanged. When enabled, the inner store is wrapped in a
+/// SpillingTimeBasedSliceStore with policy/backend/sensor resolved from their registries.
 ///
-/// The factory is the ONLY place the lowering rules need to call — they pass through the
-/// SpillConfiguration verbatim, no other changes are required at call sites.
+/// The wrap is deferred to runtime (`WindowBasedOperatorHandler::start()`), where the buffer
+/// provider first becomes available — lowering rules build only the plain inner store.
 class SliceStoreFactory
 {
 public:
-    /// `bufferProvider` is required only when spill is enabled (sensor needs it). Pass nullptr when
-    /// disabled; nullptr with enabled spill is a precondition violation.
-    [[nodiscard]] static std::unique_ptr<WindowSlicesStoreInterface> create(
+    /// Wraps an existing in-memory `WindowSlicesStoreInterface` with a `SpillingTimeBasedSliceStore`
+    /// when `spillConfig.enabled`. This is the path used by `WindowBasedOperatorHandler::start()`,
+    /// where the buffer provider only becomes available at runtime. `serializerName` is the serializer
+    /// registered for the Slice subclass this store holds (set on the handler in the lowering); it is
+    /// resolved once here. If spill is disabled, the buffer provider is null, or no serializer is
+    /// registered under `serializerName`, the inner store is returned unchanged with a `NES_WARN`.
+    [[nodiscard]] static std::unique_ptr<WindowSlicesStoreInterface> wrapWithSpill(
+        std::unique_ptr<WindowSlicesStoreInterface> inner,
         const SpillConfiguration& spillConfig,
-        uint64_t windowSize,
-        uint64_t windowSlide,
-        SliceCacheConfiguration sliceCacheConfig,
-        AbstractBufferProvider* bufferProvider = nullptr);
+        AbstractBufferProvider* bufferProvider,
+        const std::string& serializerName);
 };
 
 }

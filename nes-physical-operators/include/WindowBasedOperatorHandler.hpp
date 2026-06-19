@@ -18,7 +18,10 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
+#include <Configurations/SpillConfiguration.hpp>
 #include <Identifiers/Identifiers.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <Runtime/QueryTerminationType.hpp>
@@ -60,7 +63,9 @@ public:
     WindowBasedOperatorHandler(
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
-        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore);
+        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
+        SpillConfiguration spillConfig,
+        std::string serializerName);
 
     ~WindowBasedOperatorHandler() override = default;
 
@@ -68,6 +73,12 @@ public:
     void stop(QueryTerminationType queryTerminationType, PipelineExecutionContext& pipelineExecutionContext) override;
 
     WindowSlicesStoreInterface& getSliceAndWindowStore() const;
+
+    /// Performs the deferred spill-wrap of `sliceAndWindowStore` exactly once, synchronized. Build-
+    /// and probe-pipeline setups run concurrently and both touch the store, so every setup path must
+    /// call this (via call_once) before dereferencing the store — otherwise a concurrent reader can
+    /// observe the moved-from `unique_ptr` mid-wrap. No-op when spill is disabled.
+    void ensureSpillStoreInitialized(PipelineExecutionContext& pipelineExecutionContext);
 
     /// Updates the corresponding watermark processor, and then garbage collects all slices and windows that are not valid anymore
     void garbageCollectSlicesAndWindows(const BufferMetaData& bufferMetaData) const;
@@ -98,5 +109,13 @@ protected:
     uint64_t numberOfWorkerThreads;
     const OriginId outputOriginId;
     const std::vector<OriginId> inputOrigins;
+    /// Per-query spill override carried from the lowering rule. When `enabled` is true, the in-memory
+    /// `sliceAndWindowStore` is wrapped in a `SpillingTimeBasedSliceStore` by ensureSpillStoreInitialized().
+    SpillConfiguration spillConfig;
+    /// Name of the SliceStateSerializer for this handler's Slice subclass, set at construction in the
+    /// lowering rule. Looked up once (in SliceStoreFactory) when the spilling store is built.
+    std::string serializerName;
+    /// Guards the one-time deferred spill-wrap against concurrent build/probe pipeline setups.
+    std::once_flag spillWrapOnceFlag;
 };
 }

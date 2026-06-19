@@ -68,6 +68,8 @@ EXCEPTION(InvalidOptimizerRuleset, 2037, "invalid optimizer ruleset")
 EXCEPTION(UnknownModelName, 2040, "unknown model name")
 EXCEPTION(ModelAlreadyExists, 2041, "model already exists")
 EXCEPTION(CannotLoadModel, 2042, "cannot load model")
+EXCEPTION(UnknownSpillPolicy, 2043, "unknown spill policy")
+EXCEPTION(UnknownStorageBackend, 2044, "unknown storage backend")
 
 /// 23XX Distributed
 EXCEPTION(PlacementFailure, 2300, "placement failure")

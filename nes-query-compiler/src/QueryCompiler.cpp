@@ -31,7 +31,15 @@ namespace NES::QueryCompilation
 std::unique_ptr<CompiledQueryPlan> QueryCompiler::compileQuery(std::unique_ptr<QueryCompilationRequest> request)
 {
     auto lowerToCompiledQueryPlanPhase = LowerToCompiledQueryPlanPhase(request->dumpCompilationResult);
-    auto queryPlan = LowerToPhysicalOperators::apply(request->queryPlan, defaultQueryExecution);
+    /// Materialise an effective configuration by overlaying the per-query spill override (if any)
+    /// onto the engine defaults. Cheap copy — QueryExecutionConfiguration is a POD-ish struct.
+    auto effectiveConf = defaultQueryExecution;
+    effectiveConf.spillConfiguration = effectiveConf.spillWorkerConfiguration.toSpillConfiguration();
+    if (request->spillOverride.has_value())
+    {
+        effectiveConf.spillConfiguration = *request->spillOverride;
+    }
+    auto queryPlan = LowerToPhysicalOperators::apply(request->queryPlan, effectiveConf);
     auto pipelinedQueryPlan = PipeliningPhase::apply(queryPlan);
     return lowerToCompiledQueryPlanPhase.apply(pipelinedQueryPlan);
 }

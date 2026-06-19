@@ -536,6 +536,7 @@ public:
             if (auto* const queryAst = statementAST->queryWithOptions(); queryAst != nullptr)
             {
                 std::optional<DistributedQueryId> queryId;
+                std::optional<SpillConfiguration> spillCfg;
                 if (queryAst->optionsClause() != nullptr)
                 {
                     auto options = bindConfigOptions(queryAst->optionsClause()->options->namedConfigExpression());
@@ -551,8 +552,41 @@ public:
                             queryId = DistributedQueryId(std::get<std::string>(*literal));
                         }
                     }
+                    if (auto spillIter = options.find("SPILL"); spillIter != options.end())
+                    {
+                        SpillConfiguration cfg{};
+                        const auto readBool = [&](const std::string& key, bool& target)
+                        {
+                            if (auto it = spillIter->second.find(key); it != spillIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if ((literal == nullptr) || !std::holds_alternative<bool>(*literal))
+                                {
+                                    throw InvalidQuerySyntax("SPILL." + key + " must be a bool");
+                                }
+                                target = std::get<bool>(*literal);
+                            }
+                        };
+                        const auto readString = [&](const std::string& key, std::string& target)
+                        {
+                            if (auto it = spillIter->second.find(key); it != spillIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if ((literal == nullptr) || !std::holds_alternative<std::string>(*literal))
+                                {
+                                    throw InvalidQuerySyntax("SPILL." + key + " must be a string");
+                                }
+                                target = std::get<std::string>(*literal);
+                            }
+                        };
+                        readBool("ENABLED", cfg.enabled);
+                        readString("POLICY", cfg.policyName);
+                        readString("BACKEND", cfg.storageBackendName);
+                        readString("PREDICTOR", cfg.predictorName);
+                        spillCfg = cfg;
+                    }
                 }
-                return QueryStatement{.plan = queryBinder(queryAst->query()), .id = queryId};
+                return QueryStatement{.plan = queryBinder(queryAst->query()), .id = queryId, .spillConfig = spillCfg};
             }
 
             throw InvalidStatement(statementAST->toString());

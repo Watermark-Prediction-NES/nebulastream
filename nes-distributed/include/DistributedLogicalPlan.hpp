@@ -68,6 +68,10 @@ public:
 
     [[nodiscard]] auto end() const { return localPlans.end(); }
 
+    [[nodiscard]] auto begin() { return localPlans.begin(); }
+
+    [[nodiscard]] auto end() { return localPlans.end(); }
+
 private:
     DistributedQueryId queryId{DistributedQueryId::INVALID};
     std::unordered_map<Host, std::vector<LogicalPlan>> localPlans;
