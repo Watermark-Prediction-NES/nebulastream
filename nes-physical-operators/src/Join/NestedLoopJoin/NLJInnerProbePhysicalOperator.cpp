@@ -65,7 +65,7 @@ NLJInnerProbePhysicalOperator::NLJInnerProbePhysicalOperator(
 {
 }
 
-void NLJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> NLJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     StreamJoinProbePhysicalOperator::open(executionCtx, recordBuffer);
 
@@ -117,6 +117,7 @@ void NLJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordB
             windowStart,
             windowEnd);
     }
+    return recordBuffer.getNumRecords();
 }
 
 }

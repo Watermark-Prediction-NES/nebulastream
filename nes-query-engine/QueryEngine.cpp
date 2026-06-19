@@ -488,6 +488,7 @@ bool ThreadPool::WorkerThread::operator()(WorkTask& task) const
     if (auto pipeline = task.pipeline.lock())
     {
         ENGINE_LOG_DEBUG("Handle Task for {}-{}. Tuples: {}", task.queryId, pipeline->id, task.buf.getNumberOfTuples());
+
         DefaultPEC pec(
             pool.numberOfThreads(),
             WorkerThread::id,
@@ -501,8 +502,11 @@ bool ThreadPool::WorkerThread::operator()(WorkTask& task) const
                     pipeline->successors,
                     [&](const auto& successor)
                     {
-                        pool.statistic->onEvent(
-                            TaskEmit{id, task.queryId, pipeline->id, successor->id, taskId, tupleBuffer.getNumberOfTuples()});
+                        if (not pipeline->stage->firstPipeline)
+                        {
+                            pool.statistic->onEvent(
+                                TaskEmit{id, task.queryId, pipeline->id, successor->id, taskId, tupleBuffer.getNumberOfTuples(), false});
+                        }
                         return pool.emitWork(task.queryId, successor, tupleBuffer, TaskCallback{}, continuationPolicy);
                     });
             },
@@ -517,12 +521,21 @@ bool ThreadPool::WorkerThread::operator()(WorkTask& task) const
                 {
                     pool.addInternalTask(WorkTask(task.queryId, pipeline->id, pipeline, tupleBuffer, std::move(task.callback)));
                 }
-                pool.statistic->onEvent(TaskEmit{id, task.queryId, pipeline->id, pipeline->id, taskId, tupleBuffer.getNumberOfTuples()});
+                if (not pipeline->stage->firstPipeline)
+                {
+                    pool.statistic->onEvent(
+                        TaskEmit{id, task.queryId, pipeline->id, pipeline->id, taskId, tupleBuffer.getNumberOfTuples(), false});
+                }
             }
 
         );
         pool.statistic->onEvent(TaskExecutionStart{WorkerThread::id, task.queryId, pipeline->id, taskId, task.buf.getNumberOfTuples()});
         pipeline->stage->execute(task.buf, pec);
+        if (pipeline->stage->firstPipeline)
+        {
+            pool.statistic->onEvent(
+                TaskEmit{WorkerThread::id, task.queryId, pipeline->id, pipeline->id, taskId, task.buf.getNumberOfProcessedTuples(), true});
+        }
         pool.statistic->onEvent(TaskExecutionComplete{WorkerThread::id, task.queryId, pipeline->id, taskId});
         return true;
     }

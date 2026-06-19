@@ -89,8 +89,9 @@ public:
     [[nodiscard]] nautilus::val<bool> indexBuffer(const RecordBuffer& recordBuffer, const ArenaRef& arenaRef) const;
 
     /// Executes the second phase, which iterates over a (raw) buffer, reading specific records and fields from a (raw) buffer
-    /// Relies on the index created in the first phase (indexBuffer), which it accesses through the static_thread local member
-    void readBuffer(
+    /// Relies on the index created in the first phase (indexBuffer), which it accesses through the static_thread local member.
+    /// Returns the number of processed tuples.
+    nautilus::val<uint64_t> readBuffer(
         ExecutionContext& executionCtx,
         const RecordBuffer& recordBuffer,
         const std::function<void(ExecutionContext& executionCtx, Record& record)>& executeChild);

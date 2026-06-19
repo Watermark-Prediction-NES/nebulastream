@@ -75,7 +75,8 @@ void CompiledExecutablePipelineStage::registerPipelineFunction(nautilus::engine:
         auto ctx = ExecutionContext(pipelineExecutionContext, arenaRef);
         RecordBuffer recordBuffer(recordBufferRef);
 
-        pipeline->getRootOperator().open(ctx, recordBuffer);
+        const auto processedNumberOfTuples = pipeline->getRootOperator().open(ctx, recordBuffer);
+        recordBuffer.setNumberOfProcessedTuples(processedNumberOfTuples);
         switch (ctx.getOpenReturnState())
         {
             case OpenReturnState::CONTINUE: {

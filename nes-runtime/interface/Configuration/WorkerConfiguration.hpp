@@ -84,6 +84,12 @@ public:
 
     BoolOption dumpGraph = {"dump_graph", "false", "If to dump graph of the compilation results"};
 
+    UIntOption throughputListenerInterval
+        = {"throughput_listener_interval_in_ms",
+           "200",
+           "Time interval in milliseconds for the throughput listener",
+           {std::make_shared<NumberValidation>()}};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -97,7 +103,8 @@ private:
             &bufferAlignmentInBytes,
             &defaultMaxInflightBuffers,
             &dumpQueryCompilationIR,
-            &dumpGraph};
+            &dumpGraph,
+            &throughputListenerInterval};
     }
 };
 }

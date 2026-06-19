@@ -45,7 +45,7 @@ public:
     /// Shared open() for all probe operators: copies the record-buffer metadata into the execution
     /// context (this operator acts as a scan) and opens the child pipeline. Concrete probe operators
     /// override open(), call this base version first, then run their probe-specific logic.
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
 protected:
     /// Creates a joined record out of the outer and inner record

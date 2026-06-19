@@ -41,6 +41,11 @@ public:
     /// `stop` may throw to indicate an error.
     virtual void stop(PipelineExecutionContext& pipelineExecutionContext) = 0;
 
+    /// True for pipelines directly downstream of a source. Set during query compilation
+    /// (LowerToCompiledQueryPlanPhase::processSource) and read by the QueryEngine to tag
+    /// source-boundary TaskEmit events for throughput accounting.
+    bool firstPipeline = false;
+
     friend std::ostream& operator<<(std::ostream& os, const ExecutablePipelineStage& eps) { return eps.toString(os); }
 
 protected:

@@ -66,6 +66,7 @@ void LowerToCompiledQueryPlanPhase::processSource(const std::shared_ptr<Pipeline
     {
         if (auto executableSuccessor = processSuccessor(sourceOperator.id, successor))
         {
+            (*executableSuccessor)->stage->firstPipeline = true;
             executableSuccessorPipelines.emplace_back(*executableSuccessor);
         }
     }

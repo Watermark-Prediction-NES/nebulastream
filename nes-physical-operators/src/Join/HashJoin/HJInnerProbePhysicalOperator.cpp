@@ -58,7 +58,7 @@ HJInnerProbePhysicalOperator::HJInnerProbePhysicalOperator(
 {
 }
 
-void HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     StreamJoinProbePhysicalOperator::open(executionCtx, recordBuffer);
 
@@ -78,5 +78,6 @@ void HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBu
 
     performMatchPairsProbe(
         leftHashMapRefs, leftNumberOfHashMaps, rightHashMapRefs, rightNumberOfHashMaps, executionCtx, windowStart, windowEnd);
+    return recordBuffer.getNumRecords();
 }
 }

@@ -123,7 +123,7 @@ void NLJOuterProbePhysicalOperator::performNullFillProbe(
 }
 
 /// NOLINTNEXTLINE(readability-function-cognitive-complexity) outer join dispatches by task type and handles multiple slices
-void NLJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> NLJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     StreamJoinProbePhysicalOperator::open(executionCtx, recordBuffer);
 
@@ -166,7 +166,7 @@ void NLJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordB
                 windowStart,
                 windowEnd);
         }
-        return;
+        return recordBuffer.getNumRecords();
     }
 
     if (probeTaskType == static_cast<uint64_t>(ProbeTaskType::RIGHT_NULL_FILL))
@@ -192,7 +192,7 @@ void NLJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordB
                 windowStart,
                 windowEnd);
         }
-        return;
+        return recordBuffer.getNumRecords();
     }
 
     /// MATCH_PAIRS: same as inner join — 1 left + 1 right slice
@@ -232,6 +232,7 @@ void NLJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordB
             windowStart,
             windowEnd);
     }
+    return recordBuffer.getNumRecords();
 }
 
 }
