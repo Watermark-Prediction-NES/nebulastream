@@ -70,13 +70,24 @@ void PagedVector::PagesWrapper::updateCumulativeSumAllPages()
 
 void PagedVector::moveAllPages(PagedVector& other)
 {
-    copyFrom(other);
-    other.pages.clearPages();
+    /// Replaces the previous copy-then-clear pattern with an explicit drain + adopt that
+    /// avoids walking the buffer list twice.
+    adoptPages(other.drainPages());
 }
 
 void PagedVector::copyFrom(const PagedVector& other)
 {
     pages.addPages(other.pages);
+}
+
+std::vector<TupleBuffer> PagedVector::drainPages()
+{
+    return pages.extractBuffers();
+}
+
+void PagedVector::adoptPages(std::vector<TupleBuffer> newPages)
+{
+    pages.appendBuffers(std::move(newPages));
 }
 
 const TupleBuffer* PagedVector::getTupleBufferForEntry(const uint64_t entryPos) const
@@ -128,6 +139,28 @@ void PagedVector::PagesWrapper::addPages(const PagesWrapper& other)
 void PagedVector::PagesWrapper::clearPages()
 {
     pages.clear();
+}
+
+std::vector<TupleBuffer> PagedVector::PagesWrapper::extractBuffers()
+{
+    std::vector<TupleBuffer> out;
+    out.reserve(pages.size());
+    for (auto& entry : pages)
+    {
+        out.push_back(std::move(entry.buffer));
+    }
+    pages.clear();
+    return out;
+}
+
+void PagedVector::PagesWrapper::appendBuffers(std::vector<TupleBuffer> newBuffers)
+{
+    pages.reserve(pages.size() + newBuffers.size());
+    for (auto& buffer : newBuffers)
+    {
+        pages.emplace_back(std::move(buffer));
+    }
+    updateCumulativeSumAllPages();
 }
 
 std::optional<size_t> PagedVector::PagesWrapper::findIdx(const uint64_t entryPos) const

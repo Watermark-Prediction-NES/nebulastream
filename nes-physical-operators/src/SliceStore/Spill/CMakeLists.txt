@@ -11,12 +11,13 @@
 # limitations under the License.
 
 add_source_files(nes-physical-operators
-        Slice.cpp
-        DefaultTimeBasedSliceStore.cpp
-        DefaultTimeBasedSliceStoreRef.cpp
-        SliceStoreFactory.cpp
-        SpillingTimeBasedSliceStore.cpp
+        InMemoryStorageBackend.cpp
+        LocalFileStorageBackend.cpp
+        NLJSliceStateSerializer.cpp
+        HJSliceStateSerializer.cpp
+        StubSliceSerializers.cpp
 )
 
-add_subdirectory(SliceCache)
-add_subdirectory(Spill)
+add_plugin(REACTIVE SpillPolicy nes-physical-operators ReactiveSpillPolicy.cpp)
+add_plugin(PREDICTIVE SpillPolicy nes-physical-operators PredictiveSpillPolicy.cpp)
+add_plugin(NEVER SpillPolicy nes-physical-operators NeverSpillPolicy.cpp)

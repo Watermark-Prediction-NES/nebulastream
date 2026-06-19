@@ -79,6 +79,10 @@ public:
 
     [[nodiscard]] uint64_t getNumberOfTuples() const;
 
+    /// Read-only access to the configuration the slice was created with. The spill subsystem needs
+    /// keySize / valueSize / pageSize to lay out and validate on-disk per-entry records.
+    [[nodiscard]] const CreateNewHashMapSliceArgs& getCreateArgs() const noexcept { return createNewHashMapSliceArgs; }
+
 protected:
     std::vector<std::unique_ptr<HashMap>> hashMaps;
     CreateNewHashMapSliceArgs createNewHashMapSliceArgs;
