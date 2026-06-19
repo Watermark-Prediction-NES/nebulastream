@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -35,6 +36,7 @@
 #include <SliceStore/SliceStoreRef.hpp>
 #include <Time/Timestamp.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SlicePreallocationConfiguration.hpp>
 
 namespace NES
 {
@@ -55,7 +57,11 @@ struct SlicesAndState
 class DefaultTimeBasedSliceStore final : public WindowSlicesStoreInterface
 {
 public:
-    DefaultTimeBasedSliceStore(uint64_t windowSize, uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration);
+    DefaultTimeBasedSliceStore(
+        uint64_t windowSize,
+        uint64_t windowSlide,
+        SliceCacheConfiguration sliceCacheConfiguration,
+        SlicePreallocationConfiguration slicePreallocationConfiguration = {});
 
     ~DefaultTimeBasedSliceStore() override;
     std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(
@@ -77,13 +83,24 @@ public:
         DefaultTimeBasedSliceStoreRef::DataStructureExtractor extractor, DefaultTimeBasedSliceStoreRef::CreateSlicesFunction creator);
 
 private:
+    /// Pops a recycled slice from the pool and reset()s it; falls back to createNewSlice. Always
+    /// returns exactly one slice (the surrounding store assumes 1:1 timestamp → slice for default).
+    std::shared_ptr<Slice> obtainSlice(
+        SliceStart start, SliceEnd end, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice);
+
     SliceCacheConfiguration sliceCacheConfiguration;
+    SlicePreallocationConfiguration slicePreallocationConfiguration;
     folly::Synchronized<std::unordered_map<PipelineId, std::unique_ptr<TupleBuffer>>> pipelineIdToSliceCacheStarts;
 
     /// We need to store the windows and slices in two separate maps. This is necessary as we need to access the slices during the join build phase,
     /// while we need to access windows during the triggering of windows.
     folly::Synchronized<std::map<WindowInfo, SlicesAndState>> windows;
     folly::Synchronized<std::map<SliceEnd, std::shared_ptr<Slice>>> slices;
+
+    /// LIFO of slices retired by probe-side GC; build pops + Slice::reset()s instead of allocating
+    /// a fresh slice. Drop-oldest (pop_front) when full. Empty + unused when recyclePoolSize == 0.
+    folly::Synchronized<std::deque<std::shared_ptr<Slice>>> recyclePool;
+
     SliceAssigner sliceAssigner;
 
     /// We need to store the sequence number for the triggerable window infos. This is necessary, as we have to ensure that the sequence number is unique

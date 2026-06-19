@@ -27,7 +27,8 @@
 namespace NES
 {
 
-NLJSlice::NLJSlice(const SliceStart sliceStart, const SliceEnd sliceEnd, const uint64_t numberOfWorkerThreads) : Slice(sliceStart, sliceEnd)
+NLJSlice::NLJSlice(const SliceStart sliceStart, const SliceEnd sliceEnd, const uint64_t numberOfWorkerThreads)
+    : Slice(sliceStart, sliceEnd), originalNumberOfWorkerThreads(numberOfWorkerThreads)
 {
     for (uint64_t i = 0; i < numberOfWorkerThreads; ++i)
     {
@@ -36,6 +37,19 @@ NLJSlice::NLJSlice(const SliceStart sliceStart, const SliceEnd sliceEnd, const u
 
     for (uint64_t i = 0; i < numberOfWorkerThreads; ++i)
     {
+        rightPagedVectors.emplace_back(std::make_unique<PagedVector>());
+    }
+}
+
+void NLJSlice::reset(const SliceStart newStart, const SliceEnd newEnd)
+{
+    const std::scoped_lock lock(combinePagedVectorsMutex);
+    Slice::reset(newStart, newEnd);
+    leftPagedVectors.clear();
+    rightPagedVectors.clear();
+    for (uint64_t i = 0; i < originalNumberOfWorkerThreads; ++i)
+    {
+        leftPagedVectors.emplace_back(std::make_unique<PagedVector>());
         rightPagedVectors.emplace_back(std::make_unique<PagedVector>());
     }
 }

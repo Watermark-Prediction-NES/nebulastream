@@ -27,6 +27,7 @@
 #include <Configurations/Validation/NumberValidation.hpp>
 #include <Util/ExecutionMode.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SlicePreallocationConfiguration.hpp>
 #include <SpillWorkerConfiguration.hpp>
 
 namespace NES
@@ -77,6 +78,9 @@ public:
 
     SliceCacheConfiguration sliceCacheConfiguration = {"slice_cache", "Configuration for the slice cache"};
 
+    SlicePreallocationConfiguration slicePreallocationConfiguration
+        = {"slice_preallocation", "Preemptive slice creation + slice recycle pool (both opt-in, 0 = off)"};
+
     /// Worker-level spill defaults (CLI/YAML), exposed under `spill.*`. The QueryCompiler converts
     /// these to `spillConfiguration` (below) as the engine default, which a per-query SET overrides.
     SpillWorkerConfiguration spillWorkerConfiguration
@@ -98,6 +102,7 @@ private:
             &maxNumberOfBuckets,
             &operatorBufferSize,
             &sliceCacheConfiguration,
+            &slicePreallocationConfiguration,
             &spillWorkerConfiguration};
     }
 };

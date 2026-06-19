@@ -17,10 +17,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <utility>
 #include <vector>
@@ -38,16 +40,50 @@
 #include <folly/Synchronized.h>
 #include <ErrorHandling.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SlicePreallocationConfiguration.hpp>
 
 namespace NES
 {
 DefaultTimeBasedSliceStore::DefaultTimeBasedSliceStore(
-    const uint64_t windowSize, const uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration)
+    const uint64_t windowSize,
+    const uint64_t windowSlide,
+    SliceCacheConfiguration sliceCacheConfiguration,
+    SlicePreallocationConfiguration slicePreallocationConfiguration)
     : sliceCacheConfiguration(std::move(sliceCacheConfiguration))
+    , slicePreallocationConfiguration(std::move(slicePreallocationConfiguration))
     , sliceAssigner(windowSize, windowSlide)
     , sequenceNumber(SequenceNumber::INITIAL)
     , numberOfActiveInputPipelines(0)
 {
+}
+
+std::shared_ptr<Slice> DefaultTimeBasedSliceStore::obtainSlice(
+    const SliceStart start,
+    const SliceEnd end,
+    const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice)
+{
+    if (slicePreallocationConfiguration.recyclePoolSize.getValue() > 0)
+    {
+        auto pooled = recyclePool.withWLock(
+            [](auto& pool) -> std::optional<std::shared_ptr<Slice>>
+            {
+                if (pool.empty())
+                {
+                    return std::nullopt;
+                }
+                auto s = std::move(pool.back());
+                pool.pop_back();
+                return s;
+            });
+        if (pooled)
+        {
+            (*pooled)->reset(start, end);
+            return std::move(*pooled);
+        }
+    }
+    const auto created = createNewSlice(start, end);
+    INVARIANT(created.size() == 1, "We assume that only one slice is created per timestamp for our default time-based slice store.");
+    return created[0];
 }
 
 DefaultTimeBasedSliceStore::~DefaultTimeBasedSliceStore()
@@ -73,30 +109,65 @@ std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreat
     /// It might have happened that another thread acquires the lock before the current thread is finished creating the new slices.
     /// But by not locking the slice store, we reduce the time the current thread holds the lock, increasing the performance.
     /// Therefore, we need to perform another check.
-    const auto newSlices = createNewSlice(sliceStart, sliceEnd);
-    INVARIANT(newSlices.size() == 1, "We assume that only one slice is created per timestamp for our default time-based slice store.");
+    auto newSlice = obtainSlice(sliceStart, sliceEnd, createNewSlice);
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     if (slicesWriteLocked->contains(sliceEnd))
     {
+        /// Lost the race; another thread inserted in the gap. Return the recycled slice to the pool
+        /// (if recycle is on) so we don't drop it, then return the winning slice.
+        if (slicePreallocationConfiguration.recyclePoolSize.getValue() > 0)
+        {
+            recyclePool.withWLock(
+                [&](auto& pool)
+                {
+                    if (pool.size() >= slicePreallocationConfiguration.recyclePoolSize.getValue())
+                    {
+                        pool.pop_front();
+                    }
+                    pool.push_back(std::move(newSlice));
+                });
+        }
         return {slicesWriteLocked->find(sliceEnd)->second};
     }
 
     /// At this moment, we can be sure that no slice exists and we can insert the newly created slice into the slice store
-    auto newSlice = newSlices[0];
-    slicesWriteLocked->emplace(sliceEnd, newSlice);
-    slicesWriteLocked.unlock();
-
-    /// Update the state of all windows that contain this slice as we have to expect new tuples
-    for (auto windowInfo : sliceAssigner.getAllWindowsForSlice(*newSlice))
+    auto registerSliceWithWindows = [&](const std::shared_ptr<Slice>& slice)
     {
-        const auto numberOfExpectedSlices = sliceAssigner.getWindowSize() / sliceAssigner.getWindowSlide();
-        const auto [it, success] = windowsWriteLocked->try_emplace(windowInfo, numberOfExpectedSlices);
-        if (it->second.windowState == WindowInfoState::EMITTED_TO_PROBE)
+        for (auto windowInfo : sliceAssigner.getAllWindowsForSlice(*slice))
         {
-            throw WindowingError("We should not add slices to a window that has already been triggered.");
+            const auto numberOfExpectedSlices = sliceAssigner.getWindowSize() / sliceAssigner.getWindowSlide();
+            const auto [it, success] = windowsWriteLocked->try_emplace(windowInfo, numberOfExpectedSlices);
+            if (it->second.windowState == WindowInfoState::EMITTED_TO_PROBE)
+            {
+                throw WindowingError("We should not add slices to a window that has already been triggered.");
+            }
+            it->second.windowState = WindowInfoState::WINDOW_FILLING;
+            it->second.windowSlices.emplace_back(slice);
         }
-        it->second.windowState = WindowInfoState::WINDOW_FILLING;
-        it->second.windowSlices.emplace_back(newSlice);
+    };
+
+    slicesWriteLocked->emplace(sliceEnd, newSlice);
+    registerSliceWithWindows(newSlice);
+
+    /// Preemptive create: while we already hold both locks, also create the slices covering the
+    /// next horizonMs of event time. Future build tuples land on a warm slice instead of racing.
+    const auto horizonMs = slicePreallocationConfiguration.preemptiveCreateHorizonMs.getValue();
+    const auto slide = sliceAssigner.getWindowSlide();
+    if (horizonMs > 0 and slide > 0)
+    {
+        for (const auto i : std::views::iota(uint64_t{0}, horizonMs / slide))
+        {
+            /// sliceEnd is exactly the start of the next slice, so i=0 hits [sliceEnd, sliceEnd+slide).
+            const auto futureTs = Timestamp{sliceEnd.getRawValue() + i * slide};
+            const auto nextEnd = sliceAssigner.getSliceEndTs(futureTs);
+            if (slicesWriteLocked->contains(nextEnd))
+            {
+                continue;
+            }
+            auto preSlice = obtainSlice(sliceAssigner.getSliceStartTs(futureTs), nextEnd, createNewSlice);
+            slicesWriteLocked->emplace(nextEnd, preSlice);
+            registerSliceWithWindows(preSlice);
+        }
     }
 
     return {newSlice};
@@ -247,15 +318,38 @@ void DefaultTimeBasedSliceStore::garbageCollectSlicesAndWindows(const Timestamp 
             if (const auto slicesWriteLocked = slices.tryWLock())
             {
                 /// 2. We gather all slices if they are not used in any window that has not been triggered/can not be deleted yet
+                const auto poolCap = slicePreallocationConfiguration.recyclePoolSize.getValue();
                 for (auto slicesLockedIt = slicesWriteLocked->begin(); slicesLockedIt != slicesWriteLocked->end();)
                 {
                     const auto& [sliceEnd, slicePtr] = *slicesLockedIt;
                     if (sliceEnd + sliceAssigner.getWindowSize() < newGlobalWaterMark)
                     {
-                        NES_TRACE("Deleting slice with sliceEnd {} as it is not used anymore", sliceEnd);
-                        /// As we are first copying the shared_ptr the destructor of Slice will not be called.
-                        /// This allows us to solely collect what slices to delete during holding the lock, while the time-consuming destructor is called without holding any locks
-                        slicesToDelete.emplace_back(slicePtr);
+                        /// Only recycle if the slices map is the sole owner. If a window still holds
+                        /// the slice (e.g. WAITING_ON_TERMINATION at query end), mutating it via
+                        /// reset() would race with that window's eventual probe — fall through to
+                        /// the delete path in that case.
+                        if (poolCap > 0 and slicePtr.use_count() == 1)
+                        {
+                            /// Recycle: hand the slice to the pool instead of dropping it. Drop-oldest
+                            /// (pop_front) keeps the pool LIFO-warm at the back where obtainSlice pops.
+                            recyclePool.withWLock(
+                                [&](auto& pool)
+                                {
+                                    if (pool.size() >= poolCap)
+                                    {
+                                        pool.pop_front();
+                                    }
+                                    pool.push_back(slicePtr);
+                                });
+                            NES_TRACE("Recycled slice with sliceEnd {} into pool", sliceEnd);
+                        }
+                        else
+                        {
+                            NES_TRACE("Deleting slice with sliceEnd {} as it is not used anymore", sliceEnd);
+                            /// As we are first copying the shared_ptr the destructor of Slice will not be called.
+                            /// This allows us to solely collect what slices to delete during holding the lock, while the time-consuming destructor is called without holding any locks
+                            slicesToDelete.emplace_back(slicePtr);
+                        }
                         slicesLockedIt = slicesWriteLocked->erase(slicesLockedIt);
                     }
                     else
@@ -277,6 +371,7 @@ void DefaultTimeBasedSliceStore::deleteState()
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     slicesWriteLocked->clear();
     windowsWriteLocked->clear();
+    recyclePool.wlock()->clear();
 }
 
 void DefaultTimeBasedSliceStore::incrementNumberOfInputPipelines()

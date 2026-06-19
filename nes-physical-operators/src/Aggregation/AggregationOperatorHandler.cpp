@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Aggregation/AggregationSlice.hpp>
@@ -45,8 +46,9 @@ AggregationOperatorHandler::AggregationOperatorHandler(
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
     const uint64_t maxNumberOfBuckets)
     /// Aggregation does not yet support spill (AggregationSliceStateSerializer is a NotImplemented
-    /// stub); pass a default-constructed SpillConfiguration with enabled=false.
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), SpillConfiguration{})
+    /// stub); pass a default-constructed SpillConfiguration with enabled=false. The serializer name is
+    /// fixed here rather than via the lowering since spill is always disabled for this handler.
+    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), SpillConfiguration{}, "AggregationSlice")
     , setupAlreadyCalled(false)
     , rollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})
     , maxNumberOfBuckets(maxNumberOfBuckets)
@@ -101,6 +103,15 @@ void AggregationOperatorHandler::triggerSlices(
             }
         }
 
+
+        /// A window may consist solely of preemptively-created slices that never received a tuple, so
+        /// no hashmap has any entries and `finalHashMap` was never built. There is nothing to
+        /// aggregate or emit; skipping also avoids the probe dereferencing a null finalHashMap.
+        /// (Before preemptive slice creation, every registered slice had at least one tuple.)
+        if (not finalHashMap)
+        {
+            continue;
+        }
 
         /// We need a buffer that is large enough to store:
         /// - all pointers to all hashmaps of the window to be triggered

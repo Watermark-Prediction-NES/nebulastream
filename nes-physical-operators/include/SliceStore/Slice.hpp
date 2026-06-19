@@ -58,6 +58,11 @@ public:
     [[nodiscard]] SliceStart getSliceStart() const;
     [[nodiscard]] SliceEnd getSliceEnd() const;
 
+    /// Recycles this slice for a new (start, end) window. Base impl updates sliceStart/sliceEnd;
+    /// subclasses override to additionally wipe their owned state (hashmaps, paged vectors).
+    /// Called by DefaultTimeBasedSliceStore when popping from its recycle pool.
+    virtual void reset(SliceStart newStart, SliceEnd newEnd);
+
     bool operator==(const Slice& rhs) const;
     bool operator!=(const Slice& rhs) const;
 

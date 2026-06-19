@@ -65,6 +65,24 @@ HashMapSlice::~HashMapSlice()
     hashMaps.clear();
 }
 
+void HashMapSlice::reset(const SliceStart newStart, const SliceEnd newEnd)
+{
+    Slice::reset(newStart, newEnd);
+
+    /// Same per-hashmap nautilus cleanup the destructor runs, then null the unique_ptr so the
+    /// existing lazy init path (getHashMapPtrOrCreate) reallocates on first use of the recycled
+    /// slice. We keep the outer vector + createNewHashMapSliceArgs alive — that's the reuse win.
+    INVARIANT(createNewHashMapSliceArgs.nautilusCleanup.size() == numberOfInputStreams, "We expect one cleanup function per input ");
+    for (size_t i = 0; i < hashMaps.size(); ++i)
+    {
+        if (hashMaps[i] and hashMaps[i]->getNumberOfTuples() > 0)
+        {
+            createNewHashMapSliceArgs.nautilusCleanup[i / numberOfHashMapsPerInputStream]->operator()(hashMaps[i].get());
+        }
+        hashMaps[i].reset();
+    }
+}
+
 uint64_t HashMapSlice::getNumberOfHashMaps() const
 {
     return hashMaps.size();
