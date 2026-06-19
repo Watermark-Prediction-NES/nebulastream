@@ -137,36 +137,78 @@ endif ()
 
 if (NOT CODE_COVERAGE)
     ## We run all join and aggregation tests with different no. worker threads, different join strategies, and with and w/o slice cache (if ALL_SLICE_CACHE_TESTS is ON)
-    foreach (enableSliceCache IN LISTS sliceCacheValues)
-        foreach (workerThreads IN ITEMS 1 2 4)
-            foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+    ## On top of the `none` baseline we sweep a spill + slice-preallocation matrix (predictive/always
+    ## spilling, preemptive slice creation, slice recycle pool). These knobs are correctness no-ops, so
+    ## results must match the in-memory baseline. Spill is a WORKER default here so it applies to every
+    ## query in the group (the .test files carry no SET (SPILL.*) clause).
+    ## spillVariant is the outermost dimension. The `none` baseline carries no extra flags (empty
+    ## suffix → identical to the original baseline test names); the other variants append their flags
+    ## and a name suffix. Every variant runs both interpreter and compiler.
+    ## preallocOnly = preemptive slice creation WITHOUT prediction (static event-time lookahead);
+    ## preallocPredictive = preemptive slice creation WITH a watermark predictor driving a wall-clock
+    ## horizon. The `none` baseline is the no-preallocation case, so the three together cover join +
+    ## aggregation with and without predictive preemptive creation.
+    set(spillVariants none predictiveSpill alwaysSpill preallocOnly preallocPredictive)
+    set(flags_none "")
+    # predictive spill + preemptive slice creation + slice reuse pool
+    set(flags_predictiveSpill
+            --worker.default_query_execution.spill.enabled=true
+            --worker.default_query_execution.spill.policy=PREDICTIVE
+            --worker.default_query_execution.spill.predictor=ewma
+            --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
+            --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
+    # always spill: reactive policy with a zero high-memory bound spills on every GC tick
+    set(flags_alwaysSpill
+            --worker.default_query_execution.spill.enabled=true
+            --worker.default_query_execution.spill.policy=REACTIVE
+            --worker.default_query_execution.spill.high_memory_bound=0.0)
+    # only preemptive slice creation + slice reuse pool, no spilling (static event-time lookahead)
+    set(flags_preallocOnly
+            --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
+            --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
+    # preemptive slice creation driven by a watermark predictor (wall-clock horizon), no spilling.
+    # Differs from preallocOnly only by the predictor, so the two isolate the effect of prediction.
+    set(flags_preallocPredictive
+            --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
+            --worker.default_query_execution.slice_preallocation.preemptive_predictor=ewma
+            --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
+
+    foreach (spillVariant IN LISTS spillVariants)
+        set(variantSuffix "_${spillVariant}")
+        if (spillVariant STREQUAL "none")
+            set(variantSuffix "")
+        endif ()
+        foreach (enableSliceCache IN LISTS sliceCacheValues)
+            foreach (workerThreads IN ITEMS 1 2 4)
+                foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+                    ExternalData_Add_Test(test-data
+                            NAME systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter
+                            COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter_join --data ${EXPANDED_TEST_DATA_PATH}
+                            --optimizer join_strategy=${joinStrategy}
+                            --
+                            --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=INTERPRETER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache} ${flags_${spillVariant}})
+                    set_tests_properties(systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
+                    ExternalData_Add_Test(test-data
+                            NAME systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_compiler
+                            COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_compiler_join --data ${EXPANDED_TEST_DATA_PATH}
+                            --optimizer join_strategy=${joinStrategy}
+                            --
+                            --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=COMPILER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache} ${flags_${spillVariant}})
+                    set_tests_properties(systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}${variantSuffix}_compiler PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
+                endforeach ()
                 ExternalData_Add_Test(test-data
-                        NAME systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_interpreter
-                        COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_interpreter_join --data ${EXPANDED_TEST_DATA_PATH}
-                        --optimizer join_strategy=${joinStrategy}
+                        NAME systest_agg_${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter
+                        COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter_aggregation --data ${EXPANDED_TEST_DATA_PATH}
                         --
-                        --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=INTERPRETER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache})
-                set_tests_properties(systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_interpreter PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
+                        --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=INTERPRETER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache} ${flags_${spillVariant}})
+                set_tests_properties(systest_agg_${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_interpreter PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
                 ExternalData_Add_Test(test-data
-                        NAME systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_compiler
-                        COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_compiler_join --data ${EXPANDED_TEST_DATA_PATH}
-                        --optimizer join_strategy=${joinStrategy}
+                        NAME systest_agg_${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_compiler
+                        COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_compiler_aggregation --data ${EXPANDED_TEST_DATA_PATH}
                         --
-                        --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=COMPILER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache})
-                set_tests_properties(systest_join_${workerThreads}_${joinStrategy}_sliceCache_${enableSliceCache}_compiler PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
+                        --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=COMPILER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache} ${flags_${spillVariant}})
+                set_tests_properties(systest_agg_${workerThreads}_sliceCache_${enableSliceCache}${variantSuffix}_compiler PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
             endforeach ()
-            ExternalData_Add_Test(test-data
-                    NAME systest_agg_${workerThreads}_sliceCache_${enableSliceCache}_interpreter
-                    COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_sliceCache_${enableSliceCache}_interpreter_aggregation --data ${EXPANDED_TEST_DATA_PATH}
-                    --
-                    --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=INTERPRETER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache})
-            set_tests_properties(systest_agg_${workerThreads}_sliceCache_${enableSliceCache}_interpreter PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
-            ExternalData_Add_Test(test-data
-                    NAME systest_agg_${workerThreads}_sliceCache_${enableSliceCache}_compiler
-                    COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/${workerThreads}_sliceCache_${enableSliceCache}_compiler_aggregation --data ${EXPANDED_TEST_DATA_PATH}
-                    --
-                    --worker.query_engine.number_of_worker_threads=${workerThreads} --worker.default_query_execution.execution_mode=COMPILER --worker.number_of_buffers_in_global_buffer_manager=20000 --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache})
-            set_tests_properties(systest_agg_${workerThreads}_sliceCache_${enableSliceCache}_compiler PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
         endforeach ()
     endforeach ()
 endif (NOT CODE_COVERAGE)

@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -35,10 +36,12 @@
 #include <SliceStore/SliceStoreRef.hpp>
 #include <Time/Timestamp.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SlicePreallocationConfiguration.hpp>
 
 namespace NES
 {
 
+class WatermarkPredictor;
 
 /// This struct stores a slice ptr and the state. We require this information, as we have to know the state of a slice for a given window
 struct SlicesAndState
@@ -55,7 +58,38 @@ struct SlicesAndState
 class DefaultTimeBasedSliceStore final : public WindowSlicesStoreInterface
 {
 public:
-    DefaultTimeBasedSliceStore(uint64_t windowSize, uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration);
+    using CreateSlicesFn = std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>;
+
+    /// How a build tuple gets its slice: reuse a recycled one or always create fresh. The recycle pool
+    /// is a store member, so it is passed in as an argument rather than captured — the closure only
+    /// encodes the strategy, picked once at lowering so the per-call recycle on/off branch is gone.
+    using ObtainSliceFn = std::function<std::shared_ptr<Slice>(
+        folly::Synchronized<std::deque<std::shared_ptr<Slice>>>& recyclePool, SliceStart, SliceEnd, const CreateSlicesFn&)>;
+
+    /// How many slices to preemptively create ahead of a new slice: static event-time lookahead or
+    /// predictor-driven. Predictor/assigner/clock are store-owned (and the clock is test-overridable),
+    /// so they are passed in as arguments; lowering picks the strategy, removing the per-call predictor
+    /// null check.
+    using PreemptiveSliceCountFn = std::function<uint64_t(
+        const folly::Synchronized<std::unique_ptr<WatermarkPredictor>>& predictor,
+        const SliceAssigner& sliceAssigner,
+        const std::function<Timestamp()>& wallClockNow,
+        SliceEnd sliceEnd,
+        uint64_t slide,
+        uint64_t horizonMs)>;
+
+    /// Build the two strategies from config. Called by the lowering and passed into the constructor;
+    /// the constructor also falls back to these when a strategy is not supplied.
+    static ObtainSliceFn makeObtainSliceFn(const SlicePreallocationConfiguration& config);
+    static PreemptiveSliceCountFn makePreemptiveSliceCountFn(const SlicePreallocationConfiguration& config);
+
+    DefaultTimeBasedSliceStore(
+        uint64_t windowSize,
+        uint64_t windowSlide,
+        SliceCacheConfiguration sliceCacheConfiguration,
+        SlicePreallocationConfiguration slicePreallocationConfiguration = {},
+        ObtainSliceFn obtainSliceFn = nullptr,
+        PreemptiveSliceCountFn preemptiveSliceCountFn = nullptr);
 
     ~DefaultTimeBasedSliceStore() override;
     std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(
@@ -76,14 +110,39 @@ public:
     std::unique_ptr<SliceStoreRef> createSliceStoreRef(
         DefaultTimeBasedSliceStoreRef::DataStructureExtractor extractor, DefaultTimeBasedSliceStoreRef::CreateSlicesFunction creator);
 
+    /// Override the wall-clock source (default: steady_clock ms). Only for tests, to make the
+    /// predictor-driven preemptive-create path deterministic.
+    void setWallClockSourceForTesting(std::function<Timestamp()> clock);
+
 private:
     SliceCacheConfiguration sliceCacheConfiguration;
+    SlicePreallocationConfiguration slicePreallocationConfiguration;
+
+    /// Slice-acquisition / preemptive-count strategies, selected once at construction (see the using
+    /// aliases above). Set after the config members so the constructor can fall back to building them
+    /// from slicePreallocationConfiguration.
+    ObtainSliceFn obtainSliceFn;
+    PreemptiveSliceCountFn preemptiveSliceCountFn;
     folly::Synchronized<std::unordered_map<PipelineId, std::unique_ptr<TupleBuffer>>> pipelineIdToSliceCacheStarts;
 
     /// We need to store the windows and slices in two separate maps. This is necessary as we need to access the slices during the join build phase,
     /// while we need to access windows during the triggering of windows.
     folly::Synchronized<std::map<WindowInfo, SlicesAndState>> windows;
     folly::Synchronized<std::map<SliceEnd, std::shared_ptr<Slice>>> slices;
+
+    /// LIFO of slices retired by probe-side GC; build pops + Slice::reset()s instead of allocating
+    /// a fresh slice. Drop-oldest (pop_front) when full. Empty + unused when recyclePoolSize == 0.
+    folly::Synchronized<std::deque<std::shared_ptr<Slice>>> recyclePool;
+
+    /// Predictor for the wall-clock preemptive-create horizon; null when preemptive_predictor == "off".
+    /// Fed (event-time watermark, wall-clock) on each GC tick, read in the build-side create path —
+    /// hence Synchronized (the predictor itself is not thread-safe).
+    folly::Synchronized<std::unique_ptr<WatermarkPredictor>> preemptivePredictor;
+
+    /// Wall-clock source for predictor observations + the create-horizon deadline. steady_clock ms by
+    /// default; overridable in tests via setWallClockSourceForTesting.
+    std::function<Timestamp()> wallClockNow;
+
     SliceAssigner sliceAssigner;
 
     /// We need to store the sequence number for the triggerable window infos. This is necessary, as we have to ensure that the sequence number is unique

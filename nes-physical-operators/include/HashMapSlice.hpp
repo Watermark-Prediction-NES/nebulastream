@@ -74,6 +74,11 @@ public:
 
     ~HashMapSlice() override;
 
+    /// Recycles this slice for a new window: runs the per-hashmap nautilus cleanup and nulls each
+    /// HashMap unique_ptr, so the existing lazy-init path reallocates on first use. Keeps the outer
+    /// vector + createNewHashMapSliceArgs alive — that (plus the saved slice object) is the reuse win.
+    void reset(SliceStart newStart, SliceEnd newEnd) override;
+
     /// In our current implementation, we expect one hashmap per worker thread. Thus, we return the number of hashmaps == number of worker threads.
     [[nodiscard]] uint64_t getNumberOfHashMaps() const;
 

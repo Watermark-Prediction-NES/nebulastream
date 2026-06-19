@@ -50,9 +50,15 @@ public:
     /// Moves all tuples in this slice to the PagedVector at 0th index on both sides.
     void combinePagedVectors();
 
+    /// Drops all pages and restores per-side PagedVector count to the original worker-thread count
+    /// (combinePagedVectors may have collapsed both sides to 1). New PagedVector objects are cheap
+    /// — they own no pages until insertion.
+    void reset(SliceStart newStart, SliceEnd newEnd) override;
+
 private:
     std::vector<std::unique_ptr<PagedVector>> leftPagedVectors;
     std::vector<std::unique_ptr<PagedVector>> rightPagedVectors;
     std::mutex combinePagedVectorsMutex;
+    uint64_t originalNumberOfWorkerThreads;
 };
 }

@@ -36,6 +36,12 @@ SliceEnd Slice::getSliceEnd() const
     return sliceEnd;
 }
 
+void Slice::reset(const SliceStart newStart, const SliceEnd newEnd)
+{
+    sliceStart = newStart;
+    sliceEnd = newEnd;
+}
+
 bool Slice::operator==(const Slice& rhs) const
 {
     return (sliceStart == rhs.sliceStart && sliceEnd == rhs.sliceEnd);
