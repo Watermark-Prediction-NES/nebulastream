@@ -49,6 +49,14 @@ public:
     /// Copies all pages from other to this
     void copyFrom(const PagedVector& other);
 
+    /// Extracts all pages from this vector, leaving it empty. Used by the spill subsystem to flush
+    /// pages to disk without owning a shadow class. Cumulative-sum tracking is implicitly reset.
+    [[nodiscard]] std::vector<TupleBuffer> drainPages();
+
+    /// Appends `newPages` (move-only) to the current page set. Used by the spill subsystem to
+    /// restore previously-flushed state. Cumulative sums are rebuilt internally.
+    void adoptPages(std::vector<TupleBuffer> newPages);
+
     /// Returns a pointer to the tuple buffer that contains the entry at the given position.
     [[nodiscard]] const TupleBuffer* getTupleBufferForEntry(uint64_t entryPos) const;
     /// Returns the position of the buffer in the buffer provider that contains the entry at the given position.
@@ -78,6 +86,10 @@ private:
         void addPage(const TupleBuffer& newPage);
         void addPages(const PagesWrapper& other);
         void clearPages();
+
+        [[nodiscard]] std::vector<TupleBuffer> extractBuffers();
+        /// Appends the buffers and rebuilds the cumulative sums.
+        void appendBuffers(std::vector<TupleBuffer> newBuffers);
 
     private:
         /// We use a cumulative sum to increase the speed of findIdx for an entry pos

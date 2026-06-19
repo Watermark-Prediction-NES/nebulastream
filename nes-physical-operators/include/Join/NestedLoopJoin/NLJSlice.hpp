@@ -41,6 +41,12 @@ public:
     [[nodiscard]] PagedVector* getPagedVectorRefRight(WorkerThreadId workerThreadId) const;
     [[nodiscard]] PagedVector* getPagedVectorRef(WorkerThreadId workerThreadId, JoinBuildSideType joinBuildSide) const;
 
+    /// Returns the number of distinct per-worker-thread PagedVectors. After combinePagedVectors() is
+    /// called, both sides collapse to 1. Used by the spill subsystem to iterate state on disk.
+    [[nodiscard]] uint64_t getNumberOfLeftPagedVectors() const noexcept { return leftPagedVectors.size(); }
+
+    [[nodiscard]] uint64_t getNumberOfRightPagedVectors() const noexcept { return rightPagedVectors.size(); }
+
     /// Moves all tuples in this slice to the PagedVector at 0th index on both sides.
     void combinePagedVectors();
 
