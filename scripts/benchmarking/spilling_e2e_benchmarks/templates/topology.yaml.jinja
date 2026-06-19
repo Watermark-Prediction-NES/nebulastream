@@ -1,0 +1,56 @@
+workers:
+  - host: localhost:{{ grpc_port }}
+    data_address: {{ data_address }}
+
+logical:
+  - name: streamA_q{{ q_index }}
+    schema:
+      - { name: id,        type: UINT64 }
+      - { name: value1,    type: UINT64 }
+      - { name: value2,    type: VARSIZED }
+      - { name: timestamp, type: UINT64 }
+  - name: streamB_q{{ q_index }}
+    schema:
+      - { name: id2,       type: UINT64 }
+      - { name: value1,    type: UINT64 }
+      - { name: value2,    type: VARSIZED }
+      - { name: timestamp, type: UINT64 }
+
+physical:
+  - logical: streamA_q{{ q_index }}
+    type: TCP
+    host: localhost:{{ grpc_port }}
+    parser_config:
+      type: CSV
+      field_delimiter: ","
+    source_config:
+      socket_host: "127.0.0.1"
+      socket_port: "{{ port_a }}"
+  - logical: streamB_q{{ q_index }}
+    type: TCP
+    host: localhost:{{ grpc_port }}
+    parser_config:
+      type: CSV
+      field_delimiter: ","
+    source_config:
+      socket_host: "127.0.0.1"
+      socket_port: "{{ port_b }}"
+
+sinks:
+  - name: sinkQ{{ q_index }}
+    type: File
+    host: localhost:{{ grpc_port }}
+    schema:
+      - { name: "streamA_q{{ q_index }}streamB_q{{ q_index }}$start", type: UINT64 }
+      - { name: "streamA_q{{ q_index }}streamB_q{{ q_index }}$end",   type: UINT64 }
+      - { name: "streamA_q{{ q_index }}$id",        type: UINT64 }
+      - { name: "streamA_q{{ q_index }}$value1",    type: UINT64 }
+      - { name: "streamA_q{{ q_index }}$value2",    type: VARSIZED }
+      - { name: "streamA_q{{ q_index }}$timestamp", type: UINT64 }
+      - { name: "streamB_q{{ q_index }}$id2",       type: UINT64 }
+      - { name: "streamB_q{{ q_index }}$value1",    type: UINT64 }
+      - { name: "streamB_q{{ q_index }}$value2",    type: VARSIZED }
+      - { name: "streamB_q{{ q_index }}$timestamp", type: UINT64 }
+    config:
+      file_path: "{{ sink_path }}"
+      output_format: CSV
