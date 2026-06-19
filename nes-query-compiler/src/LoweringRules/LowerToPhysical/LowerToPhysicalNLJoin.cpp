@@ -140,7 +140,12 @@ LoweringRuleResultSubgraph LowerToPhysicalNLJoin::apply(LogicalOperator logicalO
         = std::get<std::array<Windowing::BoundTimeCharacteristic, 2>>(joinTimeCharacteristicsVariant);
 
     auto sliceAndWindowStore = std::make_unique<DefaultTimeBasedSliceStore>(
-        windowType.getSize().getTime(), windowType.getSlide().getTime(), conf.sliceCacheConfiguration);
+        windowType.getSize().getTime(),
+        windowType.getSlide().getTime(),
+        conf.sliceCacheConfiguration,
+        conf.slicePreallocationConfiguration,
+        DefaultTimeBasedSliceStore::makeObtainSliceFn(conf.slicePreallocationConfiguration),
+        DefaultTimeBasedSliceStore::makePreemptiveSliceCountFn(conf.slicePreallocationConfiguration));
     auto sliceStoreRefLeft = sliceAndWindowStore->createSliceStoreRef(
         [](Slice& slice, const WorkerThreadId workerThreadId) -> void*
         {
@@ -192,7 +197,7 @@ LoweringRuleResultSubgraph LowerToPhysicalNLJoin::apply(LogicalOperator logicalO
     };
 
     auto handler = std::make_shared<NLJOperatorHandler>(
-        inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), createTriggerStrategy(), conf.evictionConfiguration);
+        inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), createTriggerStrategy(), conf.evictionConfiguration, "NLJSlice");
 
     const NLJBuildPhysicalOperator leftBuildOperator{
         handlerId, JoinBuildSideType::Left, TimeFunction::create(timeStampFieldLeft), leftTupleLayout, std::move(sliceStoreRefLeft)};

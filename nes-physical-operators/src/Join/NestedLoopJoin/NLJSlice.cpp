@@ -37,12 +37,21 @@ NLJSlice::NLJSlice(
     const uint64_t tupleSizeLeft,
     const uint64_t tupleSizeRight)
     : Slice(sliceStart, sliceEnd)
+    , bufferProvider(&bufferProvider)
+    , tupleSizeLeft(tupleSizeLeft)
+    , tupleSizeRight(tupleSizeRight)
+    , originalNumberOfWorkerThreads(numberOfWorkerThreads)
+{
+    allocatePagedVectorBuffers(numberOfWorkerThreads);
+}
+
+void NLJSlice::allocatePagedVectorBuffers(const uint64_t numberOfPagedVectorsPerSide)
 {
     const uint64_t pvMainBufferSize = PagedVector::getMainBufferSize();
-    const uint64_t pvPageBufferSize = bufferProvider.getBufferSize();
-    for (uint64_t i = 0; i < numberOfWorkerThreads; ++i)
+    const uint64_t pvPageBufferSize = bufferProvider->getBufferSize();
+    for (uint64_t i = 0; i < numberOfPagedVectorsPerSide; ++i)
     {
-        if (auto pagedVectorBuffer = bufferProvider.getUnpooledBuffer(pvMainBufferSize))
+        if (auto pagedVectorBuffer = bufferProvider->getUnpooledBuffer(pvMainBufferSize))
         {
             /// initialize the paged vector tuple buffer
             PagedVector::init(pagedVectorBuffer.value(), pvPageBufferSize, tupleSizeLeft);
@@ -54,9 +63,9 @@ NLJSlice::NLJSlice(
         }
     }
 
-    for (uint64_t i = 0; i < numberOfWorkerThreads; ++i)
+    for (uint64_t i = 0; i < numberOfPagedVectorsPerSide; ++i)
     {
-        if (auto pagedVectorBuffer = bufferProvider.getUnpooledBuffer(pvMainBufferSize))
+        if (auto pagedVectorBuffer = bufferProvider->getUnpooledBuffer(pvMainBufferSize))
         {
             /// initialize the paged vector tuple buffer
             PagedVector::init(pagedVectorBuffer.value(), pvPageBufferSize, tupleSizeRight);
@@ -67,6 +76,18 @@ NLJSlice::NLJSlice(
             throw BufferAllocationFailure("No unpooled TupleBuffer available for NLJ right paged vector main buffer");
         }
     }
+}
+
+void NLJSlice::reset(const SliceStart newStart, const SliceEnd newEnd)
+{
+    const std::scoped_lock lock(combinePagedVectorsMutex);
+    Slice::reset(newStart, newEnd);
+    /// Allocate fresh control buffers rather than re-initializing the existing ones: pages are attached as
+    /// child buffers and cannot be detached, so releasing the control buffer is the only way to give the
+    /// pages' memory back. combinePagedVectors() may have collapsed a side to 1, so restore the original count.
+    leftPagedVectorBuffers.clear();
+    rightPagedVectorBuffers.clear();
+    allocatePagedVectorBuffers(originalNumberOfWorkerThreads);
 }
 
 uint64_t NLJSlice::getNumberOfTuplesLeft() const

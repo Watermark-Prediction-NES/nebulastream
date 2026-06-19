@@ -73,9 +73,22 @@ public:
     /// Moves all tuples in this slice to the PagedVector at 0th index on both sides.
     void combinePagedVectors();
 
+    /// Drops all pages and restores per-side PagedVector count to the original worker-thread count
+    /// (combinePagedVectors may have collapsed both sides to 1). New PagedVector objects are cheap
+    /// — they own no pages until insertion.
+    void reset(SliceStart newStart, SliceEnd newEnd) override;
+
 private:
+    /// Allocates and initializes `numberOfPagedVectorsPerSide` PagedVector control buffers on each side.
+    void allocatePagedVectorBuffers(uint64_t numberOfPagedVectorsPerSide);
+
     std::vector<TupleBuffer> leftPagedVectorBuffers;
     std::vector<TupleBuffer> rightPagedVectorBuffers;
     std::mutex combinePagedVectorsMutex;
+    /// Kept so reset() can allocate fresh control buffers when the slice is recycled from the pool.
+    AbstractBufferProvider* bufferProvider;
+    uint64_t tupleSizeLeft;
+    uint64_t tupleSizeRight;
+    uint64_t originalNumberOfWorkerThreads;
 };
 }
