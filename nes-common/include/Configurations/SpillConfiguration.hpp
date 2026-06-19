@@ -40,13 +40,16 @@ struct SpillConfiguration
     /// Thread count for the storage backend's executor.
     uint32_t storageIoThreads{4};
 
-    /// Reactive policy thresholds. Spill above high; restore (if applicable) below low.
-    double lowMemoryBound{0.6};
+    /// Pressure threshold: spill above high.
     double highMemoryBound{0.85};
 
     /// Predictive-policy horizon — how many ms ahead the predictor must say the slice will trigger
     /// before the policy decides to keep it resident.
     std::chrono::milliseconds predictionHorizon{50};
+
+    /// Watermark predictor selection for `policyName == "predictive"`. Recognised values: "ewma",
+    /// "kalman", "robustkalman". Other policies ignore this field.
+    std::string predictorName{"ewma"};
 };
 
 }

@@ -22,10 +22,12 @@
 #include <Configurations/BaseOption.hpp>
 #include <Configurations/Enums/EnumOption.hpp>
 #include <Configurations/ScalarOption.hpp>
+#include <Configurations/SpillConfiguration.hpp>
 #include <Configurations/Validation/FloatValidation.hpp>
 #include <Configurations/Validation/NumberValidation.hpp>
 #include <Util/ExecutionMode.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SpillWorkerConfiguration.hpp>
 
 namespace NES
 {
@@ -75,6 +77,16 @@ public:
 
     SliceCacheConfiguration sliceCacheConfiguration = {"slice_cache", "Configuration for the slice cache"};
 
+    /// Worker-level spill defaults (CLI/YAML), exposed under `spill.*`. The QueryCompiler converts
+    /// these to `spillConfiguration` (below) as the engine default, which a per-query SET overrides.
+    SpillWorkerConfiguration spillWorkerConfiguration
+        = {"spill", "Engine-default spill subsystem settings (per-query SET (SPILL.*) overrides these)"};
+
+    /// Effective per-query spill config consumed by the lowering rules. Plain POD copy — not a
+    /// BaseOption — because spill flows per-query through the SQL binder and logical plan. Populated
+    /// by the QueryCompiler from spillWorkerConfiguration or the per-query SET override.
+    SpillConfiguration spillConfiguration{};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -85,7 +97,8 @@ private:
             &numberOfRecordsPerKey,
             &maxNumberOfBuckets,
             &operatorBufferSize,
-            &sliceCacheConfiguration};
+            &sliceCacheConfiguration,
+            &spillWorkerConfiguration};
     }
 };
 

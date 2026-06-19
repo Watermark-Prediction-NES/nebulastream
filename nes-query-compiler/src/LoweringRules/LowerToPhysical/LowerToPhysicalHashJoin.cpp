@@ -325,8 +325,8 @@ LoweringRuleResultSubgraph LowerToPhysicalHashJoin::apply(LogicalOperator logica
                 hashMapOptions.numberOfBuckets};
             return handler.getCreateNewSlicesFunction(hashMapSliceArgs);
         });
-    auto handler
-        = std::make_shared<HJOperatorHandler>(inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), conf.maxNumberOfBuckets);
+    auto handler = std::make_shared<HJOperatorHandler>(
+        inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), conf.maxNumberOfBuckets, conf.spillConfiguration);
 
     /// Creating the left and right hash join build operator
     const HJBuildPhysicalOperator leftBuildOperator{

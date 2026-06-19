@@ -27,7 +27,6 @@
 #include <typeindex>
 #include <utility>
 #include <vector>
-#include <HashMapSlice.hpp>
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMap.hpp>
 #include <Join/HashJoin/HJSlice.hpp>
@@ -42,6 +41,7 @@
 #include <Util/Logger/Logger.hpp>
 #include <cpptrace/from_current.hpp>
 #include <ErrorHandling.hpp>
+#include <HashMapSlice.hpp>
 
 namespace NES
 {
@@ -91,12 +91,8 @@ uint64_t mixFingerprint(uint64_t current, uint64_t numTuples, uint64_t numChains
     return result;
 }
 
-std::expected<void, IoError> spillOneHashmap(
-    StorageBackend& backend,
-    const SpillObjectKey& key,
-    ChainedHashMap& hashmap,
-    std::size_t payloadSize,
-    uint64_t& totalBytes)
+std::expected<void, IoError>
+spillOneHashmap(StorageBackend& backend, const SpillObjectKey& key, ChainedHashMap& hashmap, std::size_t payloadSize, uint64_t& totalBytes)
 {
     const HashMapHeader header{
         .magic = HJHM_MAGIC,
@@ -171,7 +167,8 @@ std::expected<HashMapHeader, IoError> validateHeader(HashMapHeader header, std::
     if (header.entrySize != expectedEntrySize)
     {
         return std::unexpected{IoError{
-            IoErrorCode::Corrupted, std::format("HJ restore: entrySize mismatch (file={} expected={})", header.entrySize, expectedEntrySize)}};
+            IoErrorCode::Corrupted,
+            std::format("HJ restore: entrySize mismatch (file={} expected={})", header.entrySize, expectedEntrySize)}};
     }
     return header;
 }
@@ -205,15 +202,15 @@ std::expected<void, IoError> restoreOneHashmap(
         {
             uint64_t hash{};
             {
-                auto hashRead
-                    = reader.readNext(std::span<std::byte>{reinterpret_cast<std::byte*>(&hash), sizeof(uint64_t)}).get();
+                auto hashRead = reader.readNext(std::span<std::byte>{reinterpret_cast<std::byte*>(&hash), sizeof(uint64_t)}).get();
                 if (!hashRead.has_value())
                 {
                     return std::unexpected{hashRead.error()};
                 }
                 if (hashRead.value() != sizeof(uint64_t))
                 {
-                    return std::unexpected{IoError{IoErrorCode::Corrupted, std::format("HJ restore: short read on hash at entry {}", entryIdx)}};
+                    return std::unexpected{
+                        IoError{IoErrorCode::Corrupted, std::format("HJ restore: short read on hash at entry {}", entryIdx)}};
                 }
             }
             std::size_t payloadRead = 0;
@@ -285,8 +282,8 @@ HJSliceStateSerializer::spill(Slice& slice, StorageBackend& backend, AbstractBuf
                 return ready<std::expected<SpilledSliceHandle, IoError>>(std::unexpected{result.error()});
             }
             handle.keys.push_back(key);
-            handle.stateFingerprint
-                = mixFingerprint(handle.stateFingerprint, hashmap->getNumberOfTuples(), hashmap->getNumberOfChains(), slot, sideIndex(side));
+            handle.stateFingerprint = mixFingerprint(
+                handle.stateFingerprint, hashmap->getNumberOfTuples(), hashmap->getNumberOfChains(), slot, sideIndex(side));
             /// Drain after successful write.
             hashmap->clear();
         }
@@ -309,7 +306,8 @@ HJSliceStateSerializer::restore(Slice& slice, const SpilledSliceHandle& handle, 
         auto* hashmap = static_cast<ChainedHashMap*>(hj.getHashMapPtrOrCreate(key.thread, side));
         if (hashmap == nullptr)
         {
-            return ready<std::expected<void, IoError>>(std::unexpected{IoError{IoErrorCode::TransientIo, "HJ restore: getHashMapPtrOrCreate returned null"}});
+            return ready<std::expected<void, IoError>>(
+                std::unexpected{IoError{IoErrorCode::TransientIo, "HJ restore: getHashMapPtrOrCreate returned null"}});
         }
         if (auto result = restoreOneHashmap(backend, key, *hashmap, expectedEntrySize, payloadSize, buffers); !result.has_value())
         {
@@ -346,7 +344,7 @@ uint64_t HJSliceStateSerializer::residentBytes(const Slice& slice) const noexcep
 
 namespace
 {
-const SliceStateSerializerRegistrar registrar{std::type_index{typeid(HJSlice)}, std::make_shared<HJSliceStateSerializer>()};
+const SliceStateSerializerRegistrar registrar{"HJSlice", std::make_shared<HJSliceStateSerializer>()};
 }
 
 int forceLinkHJSerializer()

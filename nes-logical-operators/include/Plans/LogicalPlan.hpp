@@ -22,6 +22,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <Configurations/SpillConfiguration.hpp>
 #include <Identifiers/Identifiers.hpp>
 #include <Iterators/BFSIterator.hpp>
 #include <Operators/LogicalOperator.hpp>
@@ -57,10 +58,18 @@ public:
     void setOriginalSql(const std::string& sql);
     void setQueryId(QueryId id);
 
+    /// Per-query spill override carried with the plan. Populated by the SQL binder from a
+    /// `SET (SPILL.* AS ...)` clause; nullopt means "use engine defaults". Survives across
+    /// optimizer + lowering boundaries.
+    [[nodiscard]] const std::optional<SpillConfiguration>& getSpillConfig() const noexcept { return spillConfig; }
+
+    void setSpillConfig(std::optional<SpillConfiguration> cfg) { spillConfig = std::move(cfg); }
+
 private:
     QueryId queryId = INVALID_QUERY_ID;
     std::vector<LogicalOperator> rootOperators;
     std::string originalSql; /// Holds the original SQL string
+    std::optional<SpillConfiguration> spillConfig;
 };
 
 /// Get all parent operators of the target operator

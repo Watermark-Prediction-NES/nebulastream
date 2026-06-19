@@ -14,55 +14,65 @@
 
 #include <SliceStore/SliceStoreFactory.hpp>
 
-#include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
+#include <Configurations/SpillConfiguration.hpp>
 #include <Runtime/AbstractBufferProvider.hpp>
-#include <SliceStore/DefaultTimeBasedSliceStore.hpp>
 #include <SliceStore/Spill/BufferPoolPressureSensor.hpp>
+#include <SliceStore/Spill/HJSliceStateSerializer.hpp>
+#include <SliceStore/Spill/InMemoryStorageBackend.hpp>
+#include <SliceStore/Spill/LocalFileStorageBackend.hpp>
 #include <SliceStore/Spill/MemoryPressureSensor.hpp>
-#include <SliceStore/Spill/SpillConfiguration.hpp>
+#include <SliceStore/Spill/NLJSliceStateSerializer.hpp>
+#include <SliceStore/Spill/SliceStateSerializer.hpp>
+#include <SliceStore/Spill/SliceStateSerializerRegistry.hpp>
 #include <SliceStore/Spill/StorageBackend.hpp>
 #include <SliceStore/Spill/StorageBackendRegistry.hpp>
 #include <SliceStore/SpillingTimeBasedSliceStore.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Util/Logger/Logger.hpp>
 #include <ErrorHandling.hpp>
-#include <SliceCacheConfiguration.hpp>
 #include <SpillPolicyRegistry.hpp>
 
 namespace NES
 {
 
-std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::create(
+std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::wrapWithSpill(
+    std::unique_ptr<WindowSlicesStoreInterface> inner,
     const SpillConfiguration& spillConfig,
-    uint64_t windowSize,
-    uint64_t windowSlide,
-    SliceCacheConfiguration sliceCacheConfig,
-    AbstractBufferProvider* bufferProvider)
+    AbstractBufferProvider* bufferProvider,
+    const std::string& serializerName)
 {
-    auto inner = std::make_unique<DefaultTimeBasedSliceStore>(windowSize, windowSlide, sliceCacheConfig);
+    /// Ensure the per-slice serializer AND storage-backend registrars (all anonymous-namespace
+    /// globals) are not dropped by the static-library linker when no other call site references them.
+    /// Without this, e.g. the systest binary links neither backend and `create("in-memory")` returns
+    /// null at runtime. Cheap calls.
+    (void)forceLinkNLJSerializer();
+    (void)forceLinkHJSerializer();
+    (void)forceLinkInMemoryStorageBackend();
+    (void)forceLinkLocalFileStorageBackend();
+
     if (!spillConfig.enabled)
     {
         return inner;
     }
+    if (bufferProvider == nullptr)
+    {
+        NES_WARNING("SliceStoreFactory::wrapWithSpill: spill enabled but buffer provider is null; keeping in-memory store");
+        return inner;
+    }
 
-    PRECONDITION(bufferProvider != nullptr, "Spill enabled but no buffer provider supplied to SliceStoreFactory");
-
-    auto policy = SpillPolicyRegistry::instance()
-                      .create(
-                          spillConfig.policyName,
-                          SpillPolicyRegistryArguments{
-                              .lowMemoryBound = spillConfig.lowMemoryBound,
-                              .highMemoryBound = spillConfig.highMemoryBound,
-                              .horizon = spillConfig.predictionHorizon,
-                              .predictor = nullptr,
-                          })
-                      .value_or(nullptr);
+    const SpillPolicyRegistryArguments policyArgs{
+        .highMemoryBound = spillConfig.highMemoryBound,
+        .horizon = spillConfig.predictionHorizon,
+        .predictor = nullptr,
+        .predictorName = spillConfig.predictorName,
+    };
+    auto policy = SpillPolicyRegistry::instance().create(spillConfig.policyName, policyArgs).value_or(nullptr);
     if (!policy)
     {
-        NES_WARNING("SliceStoreFactory: unknown spill policy '{}', falling back to never-spill", spillConfig.policyName);
-        policy = SpillPolicyRegistry::instance().create("never", SpillPolicyRegistryArguments{}).value_or(nullptr);
+        throw UnknownSpillPolicy("SliceStoreFactory::wrapWithSpill: unknown spill policy '{}'", spillConfig.policyName);
     }
 
     auto backend = StorageBackendRegistry::instance().create(
@@ -70,15 +80,22 @@ std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::create(
         StorageBackendArgs{.spillDirectory = spillConfig.spillDirectory, .ioThreads = spillConfig.storageIoThreads});
     if (!backend)
     {
-        NES_WARNING("SliceStoreFactory: unknown storage backend '{}', falling back to in-memory", spillConfig.storageBackendName);
-        backend = StorageBackendRegistry::instance().create("in-memory", StorageBackendArgs{});
+        throw UnknownStorageBackend("SliceStoreFactory::wrapWithSpill: unknown storage backend '{}'", spillConfig.storageBackendName);
     }
-    PRECONDITION(backend != nullptr, "No storage backend available even after fallback to in-memory");
+
+    /// Resolve the serializer once, here, from the name the handler was given in the lowering.
+    /// A missing entry means this Slice subclass does not support spilling — keep the in-memory store.
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup(serializerName);
+    if (serializer == nullptr)
+    {
+        NES_WARNING("SliceStoreFactory::wrapWithSpill: no serializer registered for '{}'; keeping in-memory store", serializerName);
+        return inner;
+    }
 
     auto sensor = std::make_unique<BufferPoolPressureSensor>(*bufferProvider, /*capacity*/ bufferProvider->getBufferSize());
 
     return std::make_unique<SpillingTimeBasedSliceStore>(
-        std::move(inner), std::move(policy), std::move(backend), std::move(sensor), *bufferProvider);
+        std::move(inner), std::move(policy), std::move(backend), std::move(sensor), *bufferProvider, *serializer);
 }
 
 }

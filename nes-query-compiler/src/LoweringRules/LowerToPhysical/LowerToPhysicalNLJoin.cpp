@@ -132,7 +132,8 @@ LoweringRuleResultSubgraph LowerToPhysicalNLJoin::apply(LogicalOperator logicalO
         },
         [](const WindowBasedOperatorHandler& handler) { return handler.getCreateNewSlicesFunction({}); });
 
-    auto handler = std::make_shared<NLJOperatorHandler>(inputOriginIds, outputOriginId, std::move(sliceAndWindowStore));
+    auto handler
+        = std::make_shared<NLJOperatorHandler>(inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), conf.spillConfiguration);
 
     const NLJBuildPhysicalOperator leftBuildOperator{
         handlerId, JoinBuildSideType::Left, timeStampFieldLeft.toTimeFunction(), leftBufferRef, std::move(sliceStoreRefLeft)};

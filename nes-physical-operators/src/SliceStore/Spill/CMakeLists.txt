@@ -18,6 +18,8 @@ add_source_files(nes-physical-operators
         StubSliceSerializers.cpp
 )
 
-add_plugin(REACTIVE SpillPolicy nes-physical-operators ReactiveSpillPolicy.cpp)
-add_plugin(PREDICTIVE SpillPolicy nes-physical-operators PredictiveSpillPolicy.cpp)
+# Both names back the same PressureSpillPolicy: "reactive" = no predictor, "predictive" = predictor-refined.
+# The PREDICTIVE registrar lives in the same .cpp, so it adds no extra source.
+add_plugin(REACTIVE SpillPolicy nes-physical-operators PressureSpillPolicy.cpp)
+add_plugin(PREDICTIVE SpillPolicy nes-physical-operators)
 add_plugin(NEVER SpillPolicy nes-physical-operators NeverSpillPolicy.cpp)

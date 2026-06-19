@@ -44,7 +44,9 @@ AggregationOperatorHandler::AggregationOperatorHandler(
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
     const uint64_t maxNumberOfBuckets)
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore))
+    /// Aggregation does not yet support spill (AggregationSliceStateSerializer is a NotImplemented
+    /// stub); pass a default-constructed SpillConfiguration with enabled=false.
+    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), SpillConfiguration{})
     , setupAlreadyCalled(false)
     , rollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})
     , maxNumberOfBuckets(maxNumberOfBuckets)

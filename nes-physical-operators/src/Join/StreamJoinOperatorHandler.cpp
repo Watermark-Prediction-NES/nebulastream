@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <ranges>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -31,8 +32,11 @@ namespace NES
 StreamJoinOperatorHandler::StreamJoinOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
-    std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore)
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore))
+    std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
+    SpillConfiguration spillConfig,
+    std::string serializerName)
+    : WindowBasedOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(spillConfig), std::move(serializerName))
 {
 }
 

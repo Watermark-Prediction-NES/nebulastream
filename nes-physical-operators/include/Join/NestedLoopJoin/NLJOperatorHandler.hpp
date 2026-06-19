@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
 #include <Join/StreamJoinOperatorHandler.hpp>
@@ -45,7 +46,9 @@ public:
     NLJOperatorHandler(
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
-        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore);
+        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
+        SpillConfiguration spillConfig,
+        std::string serializerName);
 
     [[nodiscard]] std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
     getCreateNewSlicesFunction(const CreateNewSlicesArguments&) const override;

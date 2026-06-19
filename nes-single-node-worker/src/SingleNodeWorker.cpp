@@ -117,6 +117,12 @@ std::expected<QueryId, Exception> SingleNodeWorker::registerQuery(LogicalPlan pl
             configuration.workerConfiguration.dumpQueryCompilationIR.getValue(), configuration.workerConfiguration.dumpGraph.getValue());
         auto request = std::make_unique<QueryCompilation::QueryCompilationRequest>(plan);
         request->dumpCompilationResult = dumpMode;
+        /// Lift per-query spill override off the plan onto the compilation request so it overlays
+        /// the engine-default QueryExecutionConfiguration::spillConfiguration.
+        if (const auto& spill = plan.getSpillConfig(); spill.has_value())
+        {
+            request->spillOverride = *spill;
+        }
         auto result = compiler->compileQuery(std::move(request));
         INVARIANT(result, "expected successful query compilation or exception, but got nothing");
         nodeEngine->registerCompiledQueryPlan(plan.getQueryId(), std::move(result));

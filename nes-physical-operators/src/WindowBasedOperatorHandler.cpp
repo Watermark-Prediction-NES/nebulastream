@@ -16,11 +16,14 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
 #include <Join/StreamJoinUtil.hpp>
 #include <Runtime/QueryTerminationType.hpp>
+#include <SliceStore/SliceStoreFactory.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Util/Logger/Logger.hpp>
 #include <Watermark/MultiOriginWatermarkProcessor.hpp>
@@ -32,19 +35,53 @@ namespace NES
 WindowBasedOperatorHandler::WindowBasedOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
-    std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore)
+    std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
+    SpillConfiguration spillConfig,
+    std::string serializerName)
     : sliceAndWindowStore(std::move(sliceAndWindowStore))
     , watermarkProcessorBuild(std::make_unique<MultiOriginWatermarkProcessor>(inputOrigins))
     , watermarkProcessorProbe(std::make_unique<MultiOriginWatermarkProcessor>(std::vector{outputOriginId}))
     , numberOfWorkerThreads(0)
     , outputOriginId(outputOriginId)
     , inputOrigins(inputOrigins)
+    , spillConfig(std::move(spillConfig))
+    , serializerName(std::move(serializerName))
 {
 }
 
 void WindowBasedOperatorHandler::start(PipelineExecutionContext& pipelineExecutionContext, uint32_t)
 {
     numberOfWorkerThreads = pipelineExecutionContext.getNumberOfWorkerThreads();
+    ensureSpillStoreInitialized(pipelineExecutionContext);
+}
+
+void WindowBasedOperatorHandler::ensureSpillStoreInitialized(PipelineExecutionContext& pipelineExecutionContext)
+{
+    if (!spillConfig.enabled)
+    {
+        return;
+    }
+    /// Deferred wrap: at lowering time the buffer provider was not available, so the lowering rule
+    /// constructed a plain DefaultTimeBasedSliceStore. Now we have a real buffer manager via the
+    /// pipeline context; wrap the in-memory store with the spilling decorator. Build- and probe-pipeline
+    /// setups run concurrently and both reach the store, so the wrap must happen exactly once and
+    /// before any concurrent reader observes the moved-from `sliceAndWindowStore`. call_once gives both:
+    /// the first caller wraps while the others block until it completes.
+    std::call_once(
+        spillWrapOnceFlag,
+        [&]
+        {
+            const auto bufferProvider = pipelineExecutionContext.getBufferManager();
+            if (bufferProvider != nullptr)
+            {
+                sliceAndWindowStore
+                    = SliceStoreFactory::wrapWithSpill(std::move(sliceAndWindowStore), spillConfig, bufferProvider.get(), serializerName);
+            }
+            else
+            {
+                NES_WARNING("WindowBasedOperatorHandler: spill enabled but no buffer manager available; staying in memory");
+            }
+        });
 }
 
 void WindowBasedOperatorHandler::stop(QueryTerminationType, PipelineExecutionContext&)

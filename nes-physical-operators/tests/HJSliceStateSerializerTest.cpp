@@ -21,7 +21,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <HashMapSlice.hpp>
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMap.hpp>
 #include <Join/HashJoin/HJSlice.hpp>
@@ -38,6 +37,7 @@
 #include <Util/Logger/impl/NesLogger.hpp>
 #include <gtest/gtest.h>
 #include <BaseUnitTest.hpp>
+#include <HashMapSlice.hpp>
 
 namespace NES
 {
@@ -102,6 +102,7 @@ public:
             delete slice;
         }
     };
+
     using SlicePtr = std::unique_ptr<HJSlice, ClearOnDelete>;
 
     SlicePtr makeSlice()
@@ -118,7 +119,7 @@ public:
         std::memcpy(payloadPtr + sizeof(uint64_t), &valueValue, sizeof(uint64_t));
     }
 
-    /// Walks every chain and collects (key, value) pairs into a set.
+    /// Walks every chain and collects the keys into a set.
     static std::unordered_set<uint64_t> collectKeySet(const ChainedHashMap& hashmap)
     {
         std::unordered_set<uint64_t> set;
@@ -156,7 +157,7 @@ TEST_F(HJSliceStateSerializerTest, RoundTripFixedSizeKeyValueRestoresAllEntries)
         expectedRight.insert(i + 1000);
     }
 
-    auto* serializer = SliceStateSerializerRegistry::instance().lookup(std::type_index{typeid(HJSlice)});
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("HJSlice");
     ASSERT_NE(serializer, nullptr);
 
     auto backend = std::make_shared<InMemoryStorageBackend>();
@@ -174,7 +175,8 @@ TEST_F(HJSliceStateSerializerTest, RoundTripFixedSizeKeyValueRestoresAllEntries)
     ASSERT_TRUE(restoreResult.has_value());
 
     const auto* restoredLeft = static_cast<const ChainedHashMap*>(restoreSlice->getHashMapPtr(WorkerThreadId{0}, JoinBuildSideType::Left));
-    const auto* restoredRight = static_cast<const ChainedHashMap*>(restoreSlice->getHashMapPtr(WorkerThreadId{0}, JoinBuildSideType::Right));
+    const auto* restoredRight
+        = static_cast<const ChainedHashMap*>(restoreSlice->getHashMapPtr(WorkerThreadId{0}, JoinBuildSideType::Right));
     ASSERT_NE(restoredLeft, nullptr);
     ASSERT_NE(restoredRight, nullptr);
     EXPECT_EQ(restoredLeft->getNumberOfTuples(), expectedLeft.size());
@@ -192,7 +194,7 @@ TEST_F(HJSliceStateSerializerTest, VarSizedHashJoinSpillReturnsTransientIoNotImp
     [[maybe_unused]] auto varSpan = leftMap->allocateSpaceForVarSized(bufferManager.get(), 64);
     EXPECT_GT(leftMap->getNumberOfVarSizedPages(), 0U);
 
-    auto* serializer = SliceStateSerializerRegistry::instance().lookup(std::type_index{typeid(HJSlice)});
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("HJSlice");
     ASSERT_NE(serializer, nullptr);
 
     auto backend = std::make_shared<InMemoryStorageBackend>();
@@ -205,7 +207,7 @@ TEST_F(HJSliceStateSerializerTest, VarSizedHashJoinSpillReturnsTransientIoNotImp
 TEST_F(HJSliceStateSerializerTest, EmptyHashMapSpillProducesZeroFiles)
 {
     auto slice = makeSlice();
-    auto* serializer = SliceStateSerializerRegistry::instance().lookup(std::type_index{typeid(HJSlice)});
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("HJSlice");
     ASSERT_NE(serializer, nullptr);
 
     auto backend = std::make_shared<InMemoryStorageBackend>();
@@ -226,7 +228,8 @@ TEST_F(HJSliceStateSerializerTest, HeaderMismatchYieldsCorruptedError)
     auto slice = makeSlice();
     auto backend = std::make_shared<InMemoryStorageBackend>();
 
-    /// Hand-write a fake file: 24 bytes of zeros (wrong magic + wrong version).
+    /// Hand-write a fake file: 24 bytes of zeros, shorter than the 28-byte header, so restore
+    /// fails with a short read on the header.
     const SpillObjectKey fakeKey{
         .queryId = 0,
         .originId = INVALID_ORIGIN_ID,
@@ -244,7 +247,7 @@ TEST_F(HJSliceStateSerializerTest, HeaderMismatchYieldsCorruptedError)
     handle.keys.push_back(fakeKey);
     handle.totalBytes = zeros.size();
 
-    auto* serializer = SliceStateSerializerRegistry::instance().lookup(std::type_index{typeid(HJSlice)});
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("HJSlice");
     ASSERT_NE(serializer, nullptr);
 
     auto restoreResult = serializer->restore(*slice, handle, *backend, *bufferManager).get();

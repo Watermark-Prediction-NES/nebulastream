@@ -21,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -41,8 +42,11 @@ HJOperatorHandler::HJOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    const uint64_t maxNumberOfBuckets)
-    : StreamJoinOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore))
+    const uint64_t maxNumberOfBuckets,
+    SpillConfiguration spillConfig,
+    std::string serializerName)
+    : StreamJoinOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(spillConfig), std::move(serializerName))
     , setupAlreadyCalledLeft(false)
     , setupAlreadyCalledRight(false)
     , rollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})
