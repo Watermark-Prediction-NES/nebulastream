@@ -129,3 +129,57 @@ TEST(ChildBufferTests, StoreAndLoadChildBufferRandomSizes)
         EXPECT_EQ(loadedBuffer.getBufferSize(), bufferSizeBeforeStore);
     }
 }
+
+/// A detached child's memory must return to the pool once the last holder drops it. Without this,
+/// PagedVector::drainPages() can only bound growth -- the drained pages stay pinned to the parent.
+TEST(ChildBufferTests, DetachChildBufferReturnsMemoryToThePool)
+{
+    auto bufferManager = NES::BufferManager::create(
+        TOTAL_MEMORY_IN_BYTES,
+        UNPOOLED_MEMORY_FRACTION,
+        BUFFER_ALIGNMENT,
+        POOLED_BUFFER_SIZE,
+        std::make_shared<NES::NesDefaultMemoryAllocator>());
+    auto baseBuffer = bufferManager->getBufferBlocking();
+    const auto availableWithOnlyBase = bufferManager->getNumberOfAvailableBuffers();
+
+    auto child = bufferManager->getBufferBlocking();
+    const auto childIndex = baseBuffer.storeChildBuffer(child);
+    ASSERT_EQ(bufferManager->getNumberOfAvailableBuffers(), availableWithOnlyBase - 1);
+
+    {
+        /// The loaded handle holds its own reference, so detaching here must not recycle the buffer yet.
+        auto loaded = baseBuffer.loadChildBuffer(childIndex);
+        baseBuffer.detachChildBuffer(childIndex);
+        EXPECT_EQ(bufferManager->getNumberOfAvailableBuffers(), availableWithOnlyBase - 1);
+    }
+    EXPECT_EQ(bufferManager->getNumberOfAvailableBuffers(), availableWithOnlyBase);
+}
+
+/// Child indices are positional, so a detach must leave a tombstone rather than compact the array --
+/// otherwise every index handed out after the detached one would silently shift.
+TEST(ChildBufferTests, DetachKeepsLaterChildIndicesValid)
+{
+    auto bufferManager = NES::BufferManager::create(
+        TOTAL_MEMORY_IN_BYTES,
+        UNPOOLED_MEMORY_FRACTION,
+        BUFFER_ALIGNMENT,
+        POOLED_BUFFER_SIZE,
+        std::make_shared<NES::NesDefaultMemoryAllocator>());
+    auto baseBuffer = bufferManager->getBufferBlocking();
+
+    auto first = bufferManager->getUnpooledBuffer(16);
+    auto second = bufferManager->getUnpooledBuffer(32);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    const auto firstIndex = baseBuffer.storeChildBuffer(first.value());
+    const auto secondIndex = baseBuffer.storeChildBuffer(second.value());
+    const auto secondSize = baseBuffer.loadChildBuffer(secondIndex).getBufferSize();
+
+    baseBuffer.detachChildBuffer(firstIndex);
+
+    EXPECT_EQ(baseBuffer.getNumberOfChildBuffers(), 2U);
+    EXPECT_EQ(baseBuffer.loadChildBuffer(secondIndex).getBufferSize(), secondSize);
+    /// Detaching twice is a no-op, not a double release.
+    baseBuffer.detachChildBuffer(firstIndex);
+}

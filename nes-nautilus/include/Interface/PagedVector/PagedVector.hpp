@@ -22,6 +22,7 @@
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/BufferManager.hpp>
 #include <Runtime/TupleBuffer.hpp>
+#include <Runtime/VariableSizedAccess.hpp>
 #include <ErrorHandling.hpp>
 
 namespace NES
@@ -85,6 +86,16 @@ public:
     /// access it again — any further operation on `other` is undefined.
     void movePagesFrom(PagedVector& other);
 
+    /// Extracts all pages from this vector, leaving it empty. Used by the spill subsystem to flush pages to disk.
+    /// The returned TupleBuffers are detached from `buffer`, so dropping them returns their memory to the pool.
+    /// The vacated child slots remain as tombstones (child indices are positional and must stay stable), so the
+    /// page window moves past them rather than reusing them.
+    [[nodiscard]] std::vector<TupleBuffer> drainPages();
+
+    /// Appends `newPages` (move-only) after the current page set. Used by the spill subsystem to restore
+    /// previously-flushed state. Cumulative sums are rebuilt internally.
+    void adoptPages(std::vector<TupleBuffer> newPages);
+
     [[nodiscard]] uint64_t getStatus() const;
     [[nodiscard]] uint64_t getTotalNumberOfRecords() const;
     [[nodiscard]] uint64_t getNumberOfPages() const;
@@ -98,6 +109,13 @@ public:
     /// @brief Returns the index of the page that stores the record at the given global record index.
     [[nodiscard]] size_t getPageIndex(uint64_t recordIndex) const;
 
+    /// @brief Child-buffer index of the page at `pageIdx`. Always map page indices through this — after a
+    /// drainPages() the page window no longer starts at child buffer 0.
+    [[nodiscard]] VariableSizedAccess::Index pageChildIndex(uint64_t pageIdx) const
+    {
+        return VariableSizedAccess::Index{header().firstPageIdx + pageIdx};
+    }
+
 private:
     struct Header
     {
@@ -106,6 +124,9 @@ private:
         uint64_t pageBufferSize;
         uint64_t pageCapacity;
         uint64_t tupleSize;
+        /// Child-buffer index of page 0. Non-zero only after drainPages(): child buffers cannot be detached,
+        /// so a drain abandons the old children in place and restarts the page window past them.
+        uint64_t firstPageIdx = 0;
 
         Header(uint64_t numPages, uint64_t bufferSize, uint64_t tupleSize)
             : numPages(numPages), pageBufferSize(bufferSize), tupleSize(tupleSize)

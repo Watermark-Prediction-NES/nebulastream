@@ -109,6 +109,8 @@ struct DirtyBufferProvider : AbstractBufferProvider
 
     [[nodiscard]] size_t getNumOfUnpooledBuffers() const override { return bm->getNumOfUnpooledBuffers(); }
 
+    [[nodiscard]] size_t getNumberOfAvailableBuffers() const override { return bm->getNumberOfAvailableBuffers(); }
+
     TupleBuffer getBufferBlocking() override
     {
         /// Tests are single-threaded; nothing releases buffers concurrently, so a blocking get on an exhausted pool would hang.
@@ -1063,6 +1065,75 @@ RC_GTEST_PROP(PagedVectorPropertyTest, concatCopyPagedVectorInterpreter, ())
 {
     Logger::setupLogging("PagedVectorPropertyTest.log", LogLevel::LOG_DEBUG);
     concatCopyProperty(EngineMode::Interpreter);
+}
+
+/// drainPages() must actually return page memory to the pool, not just move the page window. Before
+/// the child-detach API existed it could only bound growth, which made spilling a no-op for residency.
+TEST(PagedVectorDrainTest, DrainedPagesReturnToThePool)
+{
+    constexpr size_t bufferSize = 4096;
+    constexpr uint64_t tupleSize = 8;
+    constexpr size_t numPages = 4;
+    auto bufferProvider = DirtyBufferProvider::create(bufferSize, MIN_POOLED_BUFFER_COUNT * 4);
+
+    auto controlBuffer = bufferProvider->getBufferBlocking();
+    PagedVector::init(controlBuffer, bufferSize, tupleSize);
+    auto pagedVector = PagedVector::load(controlBuffer);
+    const auto availableWithControlBufferOnly = bufferProvider->getNumberOfAvailableBuffers();
+
+    std::vector<TupleBuffer> pages;
+    pages.reserve(numPages);
+    for (size_t i = 0; i < numPages; ++i)
+    {
+        pages.push_back(bufferProvider->getBufferBlocking());
+    }
+    ASSERT_EQ(bufferProvider->getNumberOfAvailableBuffers(), availableWithControlBufferOnly - numPages);
+    pagedVector.adoptPages(std::move(pages));
+    ASSERT_EQ(pagedVector.getNumberOfPages(), numPages);
+    /// adoptPages took its own reference and the local handles are gone, so the pages are still held.
+    ASSERT_EQ(bufferProvider->getNumberOfAvailableBuffers(), availableWithControlBufferOnly - numPages);
+
+    {
+        auto drained = pagedVector.drainPages();
+        ASSERT_EQ(drained.size(), numPages);
+        EXPECT_EQ(pagedVector.getNumberOfPages(), 0U);
+        /// Still pinned: the caller (the spill serializer) is about to write these bytes out.
+        EXPECT_EQ(bufferProvider->getNumberOfAvailableBuffers(), availableWithControlBufferOnly - numPages);
+    }
+    /// The drained handles are gone and the PagedVector detached its own, so the pool is whole again.
+    EXPECT_EQ(bufferProvider->getNumberOfAvailableBuffers(), availableWithControlBufferOnly);
+}
+
+/// A drain leaves tombstones in the child array, so the page window restarts past them. adoptPages()
+/// must still land contiguously and read back correctly across repeated cycles.
+TEST(PagedVectorDrainTest, AdoptAfterDrainReadsBackEveryPage)
+{
+    constexpr size_t bufferSize = 4096;
+    constexpr uint64_t tupleSize = 8;
+    constexpr size_t numPages = 3;
+    auto bufferProvider = DirtyBufferProvider::create(bufferSize, MIN_POOLED_BUFFER_COUNT * 4);
+
+    auto controlBuffer = bufferProvider->getBufferBlocking();
+    PagedVector::init(controlBuffer, bufferSize, tupleSize);
+    auto pagedVector = PagedVector::load(controlBuffer);
+
+    std::vector<TupleBuffer> pages;
+    pages.reserve(numPages);
+    for (size_t i = 0; i < numPages; ++i)
+    {
+        pages.push_back(bufferProvider->getBufferBlocking());
+    }
+    pagedVector.adoptPages(std::move(pages));
+
+    /// Two cycles: the second starts from a non-zero firstPageIdx, which is the case tombstones create.
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+        auto drained = pagedVector.drainPages();
+        ASSERT_EQ(drained.size(), numPages) << "cycle " << cycle;
+        EXPECT_EQ(pagedVector.getNumberOfPages(), 0U);
+        pagedVector.adoptPages(std::move(drained));
+        EXPECT_EQ(pagedVector.getNumberOfPages(), numPages) << "cycle " << cycle;
+    }
 }
 
 }

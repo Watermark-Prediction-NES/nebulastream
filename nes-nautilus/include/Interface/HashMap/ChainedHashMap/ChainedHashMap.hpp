@@ -85,6 +85,9 @@ public:
     [[nodiscard]] uint64_t getNumberOfPages() const;
     [[nodiscard]] ChainedHashMapEntry* getStartOfChain(uint64_t entryIdx) const;
     [[nodiscard]] uint64_t getNumberOfChains() const;
+    /// Returns the number of variable-sized storage pages held by this hashmap. Used by the spill
+    /// subsystem to fail fast when var-sized values are present (not yet supported on disk).
+    [[nodiscard]] uint64_t getNumberOfVarSizedPages() const noexcept;
 
     /// Clears and deletes all entries in the hash map. It also releases the memory of any allocated buffers or other memory.
     void clear() noexcept;

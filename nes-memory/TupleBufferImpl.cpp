@@ -194,7 +194,11 @@ bool BufferControlBlock::release()
     {
         for (auto&& child : children)
         {
-            child->controlBlock->release();
+            /// nullptr == detached by detachChildBuffer(); its reference was already dropped.
+            if (child != nullptr)
+            {
+                child->controlBlock->release();
+            }
         }
         children.clear();
 #ifdef NES_DEBUG_TUPLE_BUFFER_LEAKS
@@ -310,12 +314,24 @@ VariableSizedAccess::Index BufferControlBlock::storeChildBuffer(BufferControlBlo
     return VariableSizedAccess::Index{children.size() - 1};
 }
 
+void BufferControlBlock::detachChildBuffer(const VariableSizedAccess::Index index)
+{
+    PRECONDITION(index.index < children.size(), "Index={} is out of range={}", index, children.size());
+
+    if (auto*& child = children[index.index]; child != nullptr)
+    {
+        child->controlBlock->release();
+        child = nullptr;
+    }
+}
+
 bool BufferControlBlock::loadChildBuffer(
     const VariableSizedAccess::Index index, BufferControlBlock*& control, uint8_t*& ptr, uint32_t& size) const
 {
     PRECONDITION(index.index < children.size(), "Index={} is out of range={}", index, children.size());
 
     auto* child = children[index.index];
+    INVARIANT(child != nullptr, "Child buffer at Index={} was detached and must not be loaded again", index);
     control = child->controlBlock->retain();
     ptr = child->ptr;
     size = child->size;

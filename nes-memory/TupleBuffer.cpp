@@ -192,6 +192,11 @@ TupleBuffer TupleBuffer::loadChildBuffer(VariableSizedAccess::Index bufferIndex)
     return childBuffer;
 }
 
+void TupleBuffer::detachChildBuffer(VariableSizedAccess::Index bufferIndex) noexcept
+{
+    controlBlock->detachChildBuffer(bufferIndex);
+}
+
 bool recycleTupleBuffer(void* bufferPointer)
 {
     PRECONDITION(bufferPointer, "invalid bufferPointer");

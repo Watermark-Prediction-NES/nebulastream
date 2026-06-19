@@ -233,6 +233,11 @@ uint64_t ChainedHashMap::getNumberOfChains() const
     return numberOfChains;
 }
 
+uint64_t ChainedHashMap::getNumberOfVarSizedPages() const noexcept
+{
+    return varSizedSpace.size();
+}
+
 void ChainedHashMap::clear() noexcept
 {
     /// Deleting all entries in the hash map

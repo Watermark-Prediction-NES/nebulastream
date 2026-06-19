@@ -60,11 +60,11 @@ uint64_t loadPageForEntryProxy(const TupleBuffer* pagedVectorBuffer, const uint6
     const PagedVector pagedVector = PagedVector::load(*pagedVectorBuffer);
     PRECONDITION(pagedVector.getStatus() == PagedVector::VALID_PV, "Paged Vector must be valid for access.");
     const auto pageIdx = pagedVector.getPageIndex(entryPos);
-    *outPageBuffer = pagedVectorBuffer->loadChildBuffer(VariableSizedAccess::Index{pageIdx});
+    *outPageBuffer = pagedVectorBuffer->loadChildBuffer(pagedVector.pageChildIndex(pageIdx));
     uint64_t prevCumulativeSum = 0;
     if (pageIdx > 0)
     {
-        const auto prevPageBuffer = pagedVectorBuffer->loadChildBuffer(VariableSizedAccess::Index{pageIdx - 1});
+        const auto prevPageBuffer = pagedVectorBuffer->loadChildBuffer(pagedVector.pageChildIndex(pageIdx - 1));
         prevCumulativeSum = PagedVector::Page::load(prevPageBuffer).getCumulativeSum();
     }
     return entryPos - prevCumulativeSum;
@@ -284,7 +284,7 @@ void PagedVectorRef::pushBack(const Record& record, const nautilus::val<Abstract
             PRECONDITION(pagedVector.getStatus() == PagedVector::VALID_PV, "Paged Vector must be valid for push_back.");
             pagedVector.appendPageIfFull(bufferProvider);
             auto numPages = pagedVector.getNumberOfPages();
-            const VariableSizedAccess::Index lastPageIndex{numPages - 1};
+            const auto lastPageIndex = pagedVector.pageChildIndex(numPages - 1);
             *currentPage = pagedVectorBuffer->loadChildBuffer(lastPageIndex);
         },
         pagedVectorBuffer.asArg(),

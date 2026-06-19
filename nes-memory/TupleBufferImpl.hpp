@@ -101,6 +101,12 @@ public:
     [[nodiscard]] VariableSizedAccess::Index storeChildBuffer(BufferControlBlock* control);
     [[nodiscard]] bool loadChildBuffer(VariableSizedAccess::Index index, BufferControlBlock*& control, uint8_t*& ptr, uint32_t& size) const;
 
+    /// Drops this buffer's reference to the child at `index`, so the child's memory returns to the pool
+    /// once every other holder is gone. The slot is left as a nullptr tombstone rather than erased:
+    /// storeChildBuffer hands out positional indices, so erasing would invalidate every later one.
+    /// Detaching an already-detached index is a no-op.
+    void detachChildBuffer(VariableSizedAccess::Index index);
+
     [[nodiscard]] uint32_t getNumberOfChildBuffers() const noexcept { return children.size(); }
 #ifdef NES_DEBUG_TUPLE_BUFFER_LEAKS
     void dumpOwningThreadInfo();

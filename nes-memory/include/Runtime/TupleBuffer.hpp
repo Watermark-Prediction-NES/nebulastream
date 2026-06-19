@@ -181,6 +181,10 @@ public:
     ///@brief retrieve a child tuple buffer via its NestedTupleBufferKey
     [[nodiscard]] TupleBuffer loadChildBuffer(VariableSizedAccess::Index bufferIndex) const noexcept;
 
+    ///@brief release this buffer's reference to a child, so its memory can return to the pool once the
+    /// last holder drops it. Later child indices stay valid; the detached index must not be loaded again.
+    void detachChildBuffer(VariableSizedAccess::Index bufferIndex) noexcept;
+
     [[nodiscard]] uint32_t getNumberOfChildBuffers() const noexcept;
 
 private:

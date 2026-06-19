@@ -41,8 +41,11 @@ public:
 
     virtual size_t getBufferSize() const = 0;
 
+    /// Total pooled buffers the provider was configured with. Constant for the provider's lifetime.
     virtual size_t getNumOfPooledBuffers() const = 0;
     virtual size_t getNumOfUnpooledBuffers() const = 0;
+    /// Pooled buffers currently free. Together with getNumOfPooledBuffers() this gives pool occupancy.
+    virtual size_t getNumberOfAvailableBuffers() const = 0;
 
     virtual TupleBuffer getBufferBlocking() = 0;
 
