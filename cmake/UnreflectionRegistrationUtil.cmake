@@ -122,8 +122,6 @@ function(add_unreflection_plugin registry plugin_name)
     file(WRITE ${glue_path}
 "/// Auto-generated unreflector glue for ${registry}::${registry_key}.
 /// Self-registers at static initialization time; kept alive by --whole-archive on the glue sub-library.
-#include <stdexcept>
-#include <string>
 #include <${registry}UnreflectionRegistry.hpp>
 #include <${include_path}>
 
@@ -132,16 +130,17 @@ namespace NES
 namespace
 {
 const auto registered_${plugin_name}_${registry} = [] {
-    const bool registered = ${registry}UnreflectionRegistry::instance().addUnreflectorEntry(
+    /// Silently ignore duplicate registrations: CMake 3.28 (e.g. Ubuntu 24.04 default) does NOT
+    /// dedup \\\$<LINK_LIBRARY:WHOLE_ARCHIVE,...> generator expressions when they propagate through
+    /// INTERFACE link interfaces, so the same glue archive ends up in the final link line twice
+    /// (fixed in CMake 3.30+). Real duplicate-KEY collisions are prevented at the CMake layer by
+    /// add_unreflection_plugin() requiring one call per key, so any duplicate seen here is a linker
+    /// artifact and the first registration wins — no benign throw.
+    (void)${registry}UnreflectionRegistry::instance().addUnreflectorEntry(
         \"${registry_key}\",
         [](const Reflected& data, const ReflectionContext& context) {
             return context.unreflect<${unreflect_type}>(data);
         });
-    if (!registered)
-    {
-        /// Static-init context: an uncaught throw aborts the program loudly, without main() being able to catch it.
-        throw std::runtime_error{std::string{\"Duplicate unreflection registration for \\\"${registry_key}\\\" in ${registry}\"}};
-    }
     return 0;
 }();
 }

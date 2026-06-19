@@ -1,0 +1,16 @@
+SELECT *
+FROM (SELECT * FROM streamA_q{{ q_index }})
+INNER JOIN (SELECT * FROM streamB_q{{ q_index }})
+ON id = id2
+WINDOW SLIDING (timestamp, size {{ size_ms }} ms, advance by {{ slide_ms }} ms)
+INTO sinkQ{{ q_index }}
+{% if spill.enabled -%}
+SET (TRUE AS SPILL.ENABLED,
+     '{{ spill.policy  }}' AS SPILL.POLICY,
+     '{{ spill.backend }}' AS SPILL.BACKEND
+     {%- if spill.policy == 'predictive' %},
+     '{{ spill.predictor }}' AS SPILL.PREDICTOR
+     {%- endif %})
+{%- else -%}
+SET (FALSE AS SPILL.ENABLED)
+{%- endif %};
