@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -77,8 +78,16 @@ HJOperatorHandler::HJOperatorHandler(
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
     const uint64_t maxNumberOfBuckets,
-    JoinTriggerStrategy triggerStrategy)
-    : StreamJoinOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    SliceEvictionConfiguration evictionConfig,
+    std::string serializerName)
+    : StreamJoinOperatorHandler(
+          inputOrigins,
+          outputOriginId,
+          std::move(sliceAndWindowStore),
+          std::move(triggerStrategy),
+          std::move(evictionConfig),
+          std::move(serializerName))
     , setupAlreadyCalledLeft(false)
     , setupAlreadyCalledRight(false)
     , leftRollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})

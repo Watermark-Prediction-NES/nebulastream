@@ -30,10 +30,12 @@ using SpillPolicyRegistryReturnType = std::unique_ptr<SpillPolicy>;
 /// Arguments forwarded to a SpillPolicy factory at create time.
 struct SpillPolicyRegistryArguments
 {
-    double lowMemoryBound{0.6};
     double highMemoryBound{0.85};
     std::chrono::milliseconds horizon{50};
     WatermarkPredictor* predictor{nullptr};
+    /// Optional predictor name; consumed by the "predictive" PressureSpillPolicy to pick between built-in
+    /// predictors ("ewma", "kalman", "robustkalman"). Ignored by policies that don't use a predictor.
+    std::string predictorName{"ewma"};
 };
 
 class SpillPolicyRegistry

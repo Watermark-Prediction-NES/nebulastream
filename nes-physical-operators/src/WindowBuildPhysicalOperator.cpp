@@ -61,10 +61,14 @@ void triggerAllWindowsProxy(OperatorHandler* ptrOpHandler, PipelineExecutionCont
 }
 
 /// The slice store needs to know in how many pipelines this operator appears, and consequently, how many terminations it will receive
-void registerActivePipeline(OperatorHandler* ptrOpHandler)
+void registerActivePipeline(OperatorHandler* ptrOpHandler, PipelineExecutionContext* pipelineCtx)
 {
     PRECONDITION(ptrOpHandler != nullptr, "opHandler context should not be null!");
+    PRECONDITION(pipelineCtx != nullptr, "pipeline context should not be null!");
     auto* opHandler = dynamic_cast<WindowBasedOperatorHandler*>(ptrOpHandler);
+    /// The probe pipeline's setup wraps the store with the spilling decorator concurrently; synchronize
+    /// via the handler's call_once before dereferencing it, so we never observe the moved-from store.
+    opHandler->ensureSpillStoreInitialized(*pipelineCtx);
     opHandler->getSliceAndWindowStore().incrementNumberOfInputPipelines();
 }
 
@@ -86,7 +90,7 @@ void WindowBuildPhysicalOperator::close(ExecutionContext& executionCtx, RecordBu
 void WindowBuildPhysicalOperator::setup(ExecutionContext& executionCtx, CompilationContext&) const
 {
     auto operatorHandler = executionCtx.getGlobalOperatorHandler(operatorHandlerId);
-    invoke(registerActivePipeline, operatorHandler);
+    invoke(registerActivePipeline, operatorHandler, executionCtx.pipelineContext);
 
     sliceStoreRef->setupSliceStore(executionCtx.pipelineContext);
 }

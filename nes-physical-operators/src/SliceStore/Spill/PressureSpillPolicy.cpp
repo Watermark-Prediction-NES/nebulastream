@@ -12,34 +12,42 @@
     limitations under the License.
 */
 
-#include <SliceStore/Spill/PredictiveSpillPolicy.hpp>
+#include <SliceStore/Spill/PressureSpillPolicy.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <string_view>
 #include <SliceStore/Spill/SpillPolicy.hpp>
 #include <Time/Timestamp.hpp>
-#include <Watermark/EwmaWatermarkPredictor.hpp>
+#include <Watermark/WatermarkPredictorFactory.hpp>
 #include <SpillPolicyRegistry.hpp>
 
 namespace NES
 {
 
-PredictiveSpillPolicy::PredictiveSpillPolicy(double lowBound_, double highBound_, std::chrono::milliseconds horizon_) noexcept
-    : lowBound(lowBound_), highBound(highBound_), horizon(horizon_), predictor(std::make_unique<EwmaWatermarkPredictor>(0.3))
+PressureSpillPolicy::PressureSpillPolicy(double highBound_) noexcept : highBound(highBound_)
 {
 }
 
-SpillDecision PredictiveSpillPolicy::decide(const SliceSpillContext& ctx, double memoryPressure) const
+PressureSpillPolicy::PressureSpillPolicy(double highBound_, std::chrono::milliseconds horizon_, std::string_view predictorName) noexcept
+    : highBound(highBound_), horizon(horizon_), predictor(makeWatermarkPredictor(predictorName))
 {
-    /// Reactive guard: under-pressure cases short-circuit; predictor is consulted only when
-    /// memory is constrained.
+}
+
+SpillDecision PressureSpillPolicy::decide(const SliceSpillContext& ctx, double memoryPressure) const
+{
+    /// Pressure guard: under-pressure cases short-circuit; the predictor is consulted only when memory is constrained.
     if (memoryPressure < highBound)
     {
         return SpillDecision::Keep;
     }
 
-    /// Ask the predictor when the watermark will reach the slice's end. If unknown (cold predictor),
-    /// fall back to reactive behaviour and just spill.
+    /// No predictor, or one too cold to answer: pure-pressure behaviour — just spill.
+    if (!predictor)
+    {
+        return SpillDecision::Spill;
+    }
     const Timestamp predictedTrigger = predictor->predictWallClock(ctx.sliceEnd);
     if (predictedTrigger.getRawValue() == Timestamp::INVALID_VALUE)
     {
@@ -62,9 +70,9 @@ SpillDecision PredictiveSpillPolicy::decide(const SliceSpillContext& ctx, double
     return SpillDecision::Keep;
 }
 
-void PredictiveSpillPolicy::observe(Timestamp now, Timestamp globalWatermark) noexcept
+void PressureSpillPolicy::observe(Timestamp now, Timestamp globalWatermark) noexcept
 {
-    if (globalWatermark.getRawValue() == Timestamp::INVALID_VALUE)
+    if (!predictor || globalWatermark.getRawValue() == Timestamp::INVALID_VALUE)
     {
         return;
     }
@@ -76,9 +84,15 @@ void PredictiveSpillPolicy::observe(Timestamp now, Timestamp globalWatermark) no
     lastObservedWatermark = globalWatermark;
 }
 
+/// "reactive" => pure-pressure (no predictor). "predictive" => predictor-refined. Same class, both names retained.
+SpillPolicyRegistryReturnType SpillPolicyGeneratedRegistrar::RegisterREACTIVESpillPolicy(SpillPolicyRegistryArguments args)
+{
+    return std::make_unique<PressureSpillPolicy>(args.highMemoryBound);
+}
+
 SpillPolicyRegistryReturnType SpillPolicyGeneratedRegistrar::RegisterPREDICTIVESpillPolicy(SpillPolicyRegistryArguments args)
 {
-    return std::make_unique<PredictiveSpillPolicy>(args.lowMemoryBound, args.highMemoryBound, args.horizon);
+    return std::make_unique<PressureSpillPolicy>(args.highMemoryBound, args.horizon, args.predictorName);
 }
 
 }

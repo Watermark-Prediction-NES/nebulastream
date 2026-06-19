@@ -16,6 +16,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <variant>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -47,7 +48,9 @@ public:
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
         std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-        JoinTriggerStrategy triggerStrategy);
+        JoinTriggerStrategy triggerStrategy,
+        SliceEvictionConfiguration evictionConfig,
+        std::string serializerName);
 
 protected:
     /// Delegates to the configured JoinTriggerStrategy for each triggered window.

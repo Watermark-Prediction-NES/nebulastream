@@ -644,6 +644,7 @@ public:
             if (auto* const queryAst = statementAST->queryWithOptions(); queryAst != nullptr)
             {
                 std::optional<DistributedQueryId> queryId;
+                std::optional<SliceEvictionConfiguration> evictionCfg;
                 if (queryAst->optionsClause() != nullptr)
                 {
                     auto options = bindConfigOptions(queryAst->optionsClause()->options->namedConfigExpression());
@@ -661,8 +662,70 @@ public:
                             queryId = DistributedQueryId(std::get<std::string>(*literal));
                         }
                     }
+                    static const auto EvictionIdentifier = Identifier::parse("EVICTION");
+                    if (auto evictionIter = options.find(EvictionIdentifier); evictionIter != options.end())
+                    {
+                        SliceEvictionConfiguration cfg{};
+                        const auto readBool = [&](const std::string& key, bool& target)
+                        {
+                            if (auto it = evictionIter->second.find(Identifier::parse(key)); it != evictionIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if ((literal == nullptr) || !std::holds_alternative<bool>(*literal))
+                                {
+                                    throw InvalidQuerySyntax("EVICTION." + key + " must be a bool");
+                                }
+                                target = std::get<bool>(*literal);
+                            }
+                        };
+                        const auto readString = [&](const std::string& key, std::string& target)
+                        {
+                            if (auto it = evictionIter->second.find(Identifier::parse(key)); it != evictionIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if ((literal == nullptr) || !std::holds_alternative<std::string>(*literal))
+                                {
+                                    throw InvalidQuerySyntax("EVICTION." + key + " must be a string");
+                                }
+                                target = std::get<std::string>(*literal);
+                            }
+                        };
+                        const auto readDouble = [&](const std::string& key, double& target)
+                        {
+                            if (auto it = evictionIter->second.find(Identifier::parse(key)); it != evictionIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if (literal == nullptr)
+                                {
+                                    throw InvalidQuerySyntax("EVICTION." + key + " must be a number");
+                                }
+                                if (auto* d = std::get_if<double>(literal))
+                                {
+                                    target = *d;
+                                }
+                                else if (auto* i = std::get_if<int64_t>(literal))
+                                {
+                                    target = static_cast<double>(*i);
+                                }
+                                else if (auto* u = std::get_if<uint64_t>(literal))
+                                {
+                                    target = static_cast<double>(*u);
+                                }
+                                else
+                                {
+                                    throw InvalidQuerySyntax("EVICTION." + key + " must be a number");
+                                }
+                            }
+                        };
+                        readBool("ENABLED", cfg.enabled);
+                        readString("POLICY", cfg.policyName);
+                        readString("BACKEND", cfg.storageBackendName);
+                        readString("PREDICTOR", cfg.predictorName);
+                        readDouble("HIGH_BOUND", cfg.highMemoryBound);
+                        evictionCfg = cfg;
+                    }
                 }
-                return QueryStatement{.plan = queryBinder(queryAst->query()), .id = queryId};
+                return QueryStatement{.plan = queryBinder(queryAst->query()), .id = queryId, .evictionConfig = evictionCfg};
             }
 
             throw InvalidStatement(statementAST->toString());

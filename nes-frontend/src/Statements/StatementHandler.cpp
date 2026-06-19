@@ -394,11 +394,29 @@ std::expected<QueryStatementResult, Exception> QueryStatementHandler::operator()
 {
     CPPTRACE_TRY
     {
-        auto distributedPlan = queryOptimizer->optimize(statement.plan);
+        auto planWithEviction = statement.plan;
+        if (statement.evictionConfig.has_value())
+        {
+            planWithEviction.setEvictionConfig(statement.evictionConfig);
+        }
+        auto distributedPlan = queryOptimizer->optimize(planWithEviction);
 
         if (statement.id)
         {
             distributedPlan.setQueryId(*statement.id);
+        }
+
+        /// Propagate the per-query spill override to every local plan that will be dispatched to a
+        /// worker; the optimizer may rebuild the plan and drop the field along the way.
+        if (statement.evictionConfig.has_value())
+        {
+            for (auto& [_, localPlans] : distributedPlan)
+            {
+                for (auto& localPlan : localPlans)
+                {
+                    localPlan.setEvictionConfig(statement.evictionConfig);
+                }
+            }
         }
 
         return queryManager->start(distributedPlan)

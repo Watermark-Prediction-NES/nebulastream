@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -40,8 +41,16 @@ NLJOperatorHandler::NLJOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    JoinTriggerStrategy triggerStrategy)
-    : StreamJoinOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    SliceEvictionConfiguration evictionConfig,
+    std::string serializerName)
+    : StreamJoinOperatorHandler(
+          inputOrigins,
+          outputOriginId,
+          std::move(sliceAndWindowStore),
+          std::move(triggerStrategy),
+          std::move(evictionConfig),
+          std::move(serializerName))
 {
 }
 

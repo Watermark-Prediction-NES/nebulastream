@@ -16,6 +16,8 @@
 
 #include <map>
 #include <memory>
+#include <ranges>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -33,8 +35,12 @@ StreamJoinOperatorHandler::StreamJoinOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    JoinTriggerStrategy triggerStrategy)
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore)), triggerStrategy(std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    SliceEvictionConfiguration evictionConfig,
+    std::string serializerName)
+    : WindowBasedOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(evictionConfig), std::move(serializerName))
+    , triggerStrategy(std::move(triggerStrategy))
 {
 }
 

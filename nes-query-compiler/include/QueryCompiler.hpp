@@ -14,8 +14,10 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include <Configurations/SliceEvictionConfiguration.hpp>
 #include <Plans/LogicalPlan.hpp>
 #include <Util/DumpMode.hpp>
 #include <CompiledQueryPlan.hpp>
@@ -32,6 +34,11 @@ struct QueryCompilationRequest
     /// IMPORTANT: only the queryPlan should influence the actual result, other request options only influence how much to debug print etc.
     bool debug = false;
     DumpMode dumpCompilationResult = DumpMode{DumpMode::Options::NONE, false};
+
+    /// Per-query override of QueryExecutionConfiguration::evictionConfiguration. Populated from a
+    /// bound `SET (EVICTION.* AS ...)` clause on the query statement; nullopt means "use engine
+    /// defaults".
+    std::optional<SliceEvictionConfiguration> evictionOverride;
 };
 
 /// The query compiler behaves as a pure function: QueryPlan -> CompiledQueryPlan

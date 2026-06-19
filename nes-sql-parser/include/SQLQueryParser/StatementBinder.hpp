@@ -29,6 +29,7 @@
 #include <variant>
 #include <vector>
 #include <AntlrSQLParser.h>
+#include <Configurations/SliceEvictionConfiguration.hpp>
 #include <DataTypes/Schema.hpp>
 #include <DataTypes/SchemaFwd.hpp>
 #include <DataTypes/UnboundField.hpp>
@@ -125,6 +126,10 @@ struct QueryStatement
 {
     LogicalPlan plan;
     std::optional<DistributedQueryId> id;
+    /// Per-query overrides parsed from `SET (EVICTION.* AS ...)`. nullopt (no SPILL options given) means
+    /// "use engine defaults"; populated replaces the engine defaults wholesale — EVICTION.* keys not
+    /// listed fall back to the SliceEvictionConfiguration POD's own field defaults, not the worker defaults.
+    std::optional<SliceEvictionConfiguration> evictionConfig;
 };
 
 enum class ExplainFormat : uint8_t
