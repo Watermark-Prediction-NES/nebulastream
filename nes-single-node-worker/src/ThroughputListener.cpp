@@ -1,0 +1,220 @@
+/*
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        https://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+*/
+#include <ThroughputListener.hpp>
+
+#include <chrono>
+#include <map>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <SliceStore/SliceAssigner.hpp>
+#include <Util/Overloaded.hpp>
+#include <Thread.hpp>
+
+namespace NES
+{
+
+namespace
+{
+
+Timestamp convertToTimeStamp(const ChronoClock::time_point timePoint)
+{
+    const unsigned long milliSecondsSinceEpoch
+        = std::chrono::time_point_cast<std::chrono::milliseconds>(timePoint).time_since_epoch().count();
+    INVARIANT(milliSecondsSinceEpoch > 0, "milliSecondsSinceEpoch should be larger than 0 but are {}", milliSecondsSinceEpoch);
+    return Timestamp{milliSecondsSinceEpoch};
+}
+
+void threadRoutine(
+    const std::stop_token& token,
+    const Timestamp::Underlying timeIntervalInMilliSeconds,
+    folly::Synchronized<std::queue<Event>>& events,
+    const std::function<void(const ThroughputListener::CallBackParams&)>& callBack)
+{
+    PRECONDITION(callBack != nullptr, "Call Back is null");
+
+    Thread::setThreadName("ThroughputCalculator");
+
+    /// All variables necessary for performing a simple tumbling window average aggregation per query id
+    const SliceAssigner sliceAssigner{timeIntervalInMilliSeconds, timeIntervalInMilliSeconds};
+
+    struct ThroughputWindow
+    {
+        explicit ThroughputWindow() : startTime(Timestamp::INVALID_VALUE), endTime(Timestamp::INVALID_VALUE), tuplesProcessed(0) { }
+
+        Timestamp startTime;
+        Timestamp endTime;
+        uint64_t tuplesProcessed;
+
+        bool operator<(const ThroughputWindow& other) const { return endTime < other.endTime; }
+    };
+
+    /// We need to have for each query id windows that store the number of tuples processed in one.
+    /// For faster access, we store the window with its end time as the key in a hash map.
+    std::unordered_map<QueryId, std::map<Timestamp, ThroughputWindow>> queryIdToThroughputWindowMap;
+
+    while (!token.stop_requested())
+    {
+        if (events.rlock()->empty())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            continue;
+        }
+
+        /// As we only have one thread removing items from the queue, we are sure that we will retrieve a new item here
+        auto event = [&events]()
+        {
+            const auto lockedEvents = events.wlock();
+            const auto newEvent = lockedEvents->front();
+            lockedEvents->pop();
+            return newEvent;
+        }();
+
+        std::visit(
+            Overloaded{
+                [&](const TaskEmit& taskEmit)
+                {
+                    /// We define the throughput to be the performance of the first pipeline after the source, i.e., the throughput of emitting work from it.
+                    /// If this task did not belong to the first pipeline, we ignore it and return.
+                    if (not taskEmit.firstPipeline)
+                    {
+                        return;
+                    }
+                    const auto numberOfProcessedTuples = taskEmit.numberOfProcessedTuples;
+                    const auto queryId = taskEmit.queryId;
+                    const auto endTime = convertToTimeStamp(taskEmit.timestamp);
+                    const auto windowStart = sliceAssigner.getSliceStartTs(endTime);
+                    const auto windowEnd = sliceAssigner.getSliceEndTs(endTime);
+                    queryIdToThroughputWindowMap[queryId][windowEnd].tuplesProcessed += numberOfProcessedTuples;
+                    queryIdToThroughputWindowMap[queryId][windowEnd].startTime = windowStart;
+                    queryIdToThroughputWindowMap[queryId][windowEnd].endTime = windowEnd;
+
+
+                    /// Now we need to check if we can emit / calculate a throughput. We assume that taskEmit.timestamp is increasing
+                    for (auto& [queryId, endTimeAndThroughputWindow] : queryIdToThroughputWindowMap)
+                    {
+                        /// We need at least two windows per query to calculate a throughput
+                        if (endTimeAndThroughputWindow.size() < 2)
+                        {
+                            continue;
+                        }
+                        auto it = endTimeAndThroughputWindow.begin();
+                        while (it != std::prev(endTimeAndThroughputWindow.end()))
+                        {
+                            const auto& curWindowEnd = it->first;
+                            const auto& [startTime, endTime, tuplesProcessed] = it->second;
+                            if (curWindowEnd + timeIntervalInMilliSeconds >= windowEnd)
+                            {
+                                /// As the windows are sorted by their end time, we can break here
+                                break;
+                            }
+
+                            /// Calculating the throughput over this window and letting the callback know that a new throughput has been calculated
+                            auto nextEndTime = std::next(it)->first;
+                            const auto durationInMilliseconds = (nextEndTime - endTime).getRawValue();
+                            const auto throughputInTuplesPerSec = tuplesProcessed / (durationInMilliseconds / 1000.0);
+                            const ThroughputListener::CallBackParams callbackParams
+                                = {.queryId = queryId,
+                                   .windowStart = startTime,
+                                   .windowEnd = endTime,
+                                   .throughputInTuplesPerSec = throughputInTuplesPerSec};
+                            callBack(callbackParams);
+
+                            it = endTimeAndThroughputWindow.erase(it);
+                        }
+                    }
+                },
+                [&](const QueryStop& queryStop)
+                {
+                    /// When a query stops, flush all remaining windows for that query.
+                    /// This ensures throughput is reported even for very short-lived queries
+                    /// that finish within a single measurement window.
+                    auto it = queryIdToThroughputWindowMap.find(queryStop.queryId);
+                    if (it == queryIdToThroughputWindowMap.end())
+                    {
+                        return;
+                    }
+                    auto& endTimeAndThroughputWindow = it->second;
+                    for (auto windowIt = endTimeAndThroughputWindow.begin(); windowIt != endTimeAndThroughputWindow.end();)
+                    {
+                        const auto& [startTime, endTime, tuplesProcessed] = windowIt->second;
+                        if (tuplesProcessed > 0)
+                        {
+                            /// For the last (possibly partial) window, use the actual window boundaries for duration
+                            const auto durationInMilliseconds = (endTime - startTime).getRawValue();
+                            if (durationInMilliseconds > 0)
+                            {
+                                const auto throughputInTuplesPerSec = tuplesProcessed / (durationInMilliseconds / 1000.0);
+                                const ThroughputListener::CallBackParams callbackParams
+                                    = {.queryId = queryStop.queryId,
+                                       .windowStart = startTime,
+                                       .windowEnd = endTime,
+                                       .throughputInTuplesPerSec = throughputInTuplesPerSec};
+                                callBack(callbackParams);
+                            }
+                        }
+                        windowIt = endTimeAndThroughputWindow.erase(windowIt);
+                    }
+                    queryIdToThroughputWindowMap.erase(it);
+                },
+                [](auto) {}},
+            event);
+    }
+}
+}
+
+ThroughputListener::~ThroughputListener()
+{
+    /// We wait until the queue is empty or for 30 seconds
+    const std::chrono::seconds timeout{30};
+    const auto endTime = std::chrono::high_resolution_clock::now() + timeout;
+    while (true)
+    {
+        if (events.rlock()->empty())
+        {
+            return;
+        }
+
+        if (std::chrono::high_resolution_clock::now() >= endTime)
+        {
+            std::cout << fmt::format(
+                "Queue in ThroughputListener still contains {} elements but could not finish in {}.", events.rlock()->size(), timeout)
+                      << std::endl;
+            NES_WARNING(
+                "Queue in ThroughputListener still contains {} elements but could not finish in {}.", events.rlock()->size(), timeout);
+            return;
+        }
+    }
+}
+
+void ThroughputListener::onEvent(Event event)
+{
+    std::visit(
+        Overloaded{
+            [&](const TaskEmit& taskEmit) { events.wlock()->emplace(taskEmit); },
+            [&](const QueryStop& queryStop) { events.wlock()->emplace(queryStop); },
+            [](auto) {}},
+        event);
+}
+
+ThroughputListener::ThroughputListener(
+    const Timestamp::Underlying timeIntervalInMilliSeconds, const std::function<void(const CallBackParams&)>& callBack)
+    : timeIntervalInMilliSeconds(timeIntervalInMilliSeconds)
+    , callBack(callBack)
+    , calculateThread([this](const std::stop_token& stopToken)
+                      { threadRoutine(stopToken, this->timeIntervalInMilliSeconds, events, this->callBack); })
+
+{
+}
+}

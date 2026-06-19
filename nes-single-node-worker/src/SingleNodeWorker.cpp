@@ -14,13 +14,16 @@
 
 #include <SingleNodeWorker.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <unistd.h>
 #include <Configurations/ConfigValuePrinter.hpp>
@@ -44,6 +47,7 @@
 #include <QueryCompiler.hpp>
 #include <QueryStatus.hpp>
 #include <SingleNodeWorkerConfiguration.hpp>
+#include <ThroughputListener.hpp>
 #include <WorkerStatus.hpp>
 
 extern void initNetworkServices(const std::string& connectionAddr, const NES::Host& host, const NES::NetworkOptions& options);
@@ -71,6 +75,30 @@ SingleNodeWorker::SingleNodeWorker(const SingleNodeWorkerConfiguration& configur
         googleTracePrinter->start();
         listener->addListener(googleTracePrinter);
     }
+
+    auto throughputCallback = [](const ThroughputListener::CallBackParams& callBackParams)
+    {
+        auto formatThroughput = [](double throughput, const std::string_view suffix)
+        {
+            constexpr std::array UNITS_THROUGHPUT = {std::to_array<const char*>({"", "k", "M", "G", "T"})};
+            uint64_t unitIndex = 0;
+            while (throughput >= 1000 && unitIndex < UNITS_THROUGHPUT.size() - 1)
+            {
+                throughput /= 1000;
+                ++unitIndex;
+            }
+            return fmt::format("{:.3f} {}{}/s", throughput, UNITS_THROUGHPUT[unitIndex], suffix);
+        };
+        std::cout << fmt::format(
+            "Throughput for queryId {} in window {}-{} is {}\n",
+            callBackParams.queryId,
+            callBackParams.windowStart,
+            callBackParams.windowEnd,
+            formatThroughput(callBackParams.throughputInTuplesPerSec, "Tup"))
+                  << std::flush;
+    };
+    const auto throughputIntervalInMs = configuration.workerConfiguration.throughputListenerInterval.getValue();
+    listener->addQueryEngineListener(std::make_shared<ThroughputListener>(throughputIntervalInMs, throughputCallback));
 
     nodeEngine = NodeEngineBuilder(configuration.workerConfiguration, copyPtr(listener)).build(host);
     compiler = std::make_unique<QueryCompilation::QueryCompiler>(configuration.workerConfiguration.defaultQueryExecution);
