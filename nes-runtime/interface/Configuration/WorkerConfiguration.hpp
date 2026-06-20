@@ -70,6 +70,17 @@ public:
            "Time interval in milliseconds for the throughput listener",
            {std::make_shared<NumberValidation>()}};
 
+    /// Empty string = monitor disabled. Non-empty path enables a background thread in BufferManager
+    /// that writes "timestamp_ms,pooled_used,unpooled_used" rows at bufferUsageMonitorIntervalMs.
+    StringOption bufferUsageLogPath
+        = {"buffer_usage_log_path", "", "Path to write buffer-usage CSV (timestamp_ms,pooled_used,unpooled_used); empty disables."};
+
+    UIntOption bufferUsageMonitorIntervalMs
+        = {"buffer_usage_monitor_interval_in_ms",
+           "100",
+           "Sampling interval (ms) for the buffer-usage monitor",
+           {std::make_shared<NumberValidation>()}};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -82,7 +93,9 @@ private:
             &defaultMaxInflightBuffers,
             &dumpQueryCompilationIR,
             &dumpGraph,
-            &throughputListenerInterval};
+            &throughputListenerInterval,
+            &bufferUsageLogPath,
+            &bufferUsageMonitorIntervalMs};
     }
 };
 }
