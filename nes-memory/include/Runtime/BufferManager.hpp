@@ -15,12 +15,15 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/Allocator/NesDefaultMemoryAllocator.hpp>
@@ -68,28 +71,34 @@ class BufferManager final : public std::enable_shared_from_this<BufferManager>, 
         explicit Private() = default;
     };
 
+public:
     static constexpr auto DEFAULT_BUFFER_SIZE = 8 * 1024;
     static constexpr auto DEFAULT_NUMBER_OF_BUFFERS = 1024;
     static constexpr auto DEFAULT_ALIGNMENT = 64;
 
-public:
     explicit BufferManager(
         Private,
         uint32_t bufferSize,
         uint32_t numOfBuffers,
         std::shared_ptr<std::pmr::memory_resource> memoryResource,
-        uint32_t withAlignment);
+        uint32_t withAlignment,
+        std::optional<std::filesystem::path> monitorFilePath,
+        std::chrono::milliseconds monitorInterval);
 
     /// Creates a new global buffer manager
     /// @param bufferSize the size of each buffer in bytes
     /// @param numOfBuffers the total number of buffers in the pool
     /// @param withAlignment the alignment of each buffer, default is 64 so ony cache line aligned buffers, This value must be a pow of two and smaller than page size
     /// @param memoryResource resource for allocating and deallocating memory
+    /// @param monitorFilePath optional path; if set, a background thread writes pooled + unpooled buffer usage to this CSV
+    /// @param monitorInterval sampling interval for the buffer-usage monitor
     static std::shared_ptr<BufferManager> create(
         uint32_t bufferSize = DEFAULT_BUFFER_SIZE,
         uint32_t numOfBuffers = DEFAULT_NUMBER_OF_BUFFERS,
         const std::shared_ptr<std::pmr::memory_resource>& memoryResource = std::make_shared<NesDefaultMemoryAllocator>(),
-        uint32_t withAlignment = DEFAULT_ALIGNMENT);
+        uint32_t withAlignment = DEFAULT_ALIGNMENT,
+        std::optional<std::filesystem::path> monitorFilePath = std::nullopt,
+        std::chrono::milliseconds monitorInterval = std::chrono::milliseconds{100});
 
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;
@@ -160,6 +169,10 @@ private:
 
     std::shared_ptr<std::pmr::memory_resource> memoryResource;
     std::atomic<bool> isDestroyed{false};
+
+    /// Buffer-usage monitor: optional jthread that periodically writes pooled+unpooled used counts to CSV.
+    /// Declared last so its destructor runs first (stop+join) before other members are torn down.
+    std::jthread monitorThread;
 };
 
 
