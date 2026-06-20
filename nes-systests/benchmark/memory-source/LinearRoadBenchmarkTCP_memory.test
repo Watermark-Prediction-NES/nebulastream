@@ -1,0 +1,28 @@
+# name: milestone/LinearRoadBenchmarkTCP_memory.test
+# description: LinearRoadBenchmark from https://www.cs.brandeis.edu/~linearroad/linear-road.pdf
+# groups: [milestone, benchmark, large]
+
+# Source definitions
+CREATE LOGICAL SOURCE lrb(creationTS UINT64 NOT NULL, vehicle INT16 NOT NULL, speed FLOAT32 NOT NULL, highway INT16 NOT NULL, lane INT16 NOT NULL, direction INT16 NOT NULL, position INT32 NOT NULL);
+CREATE PHYSICAL SOURCE FOR lrb TYPE Memory;
+ATTACH FILE large/lrb/linear_road_benchmark_560K.csv
+
+CREATE SINK q1Checksum(lrb.start UINT64 NOT NULL, lrb.end UINT64 NOT NULL, lrb.highway INT16 NOT NULL, lrb.direction INT16 NOT NULL, positionDiv5280 INT32 NOT NULL, lrb.avgSpeed FLOAT64 NOT NULL)  TYPE Void;
+CREATE SINK q2Checksum(lrb.start UINT64 NOT NULL, lrb.end UINT64 NOT NULL, lrb.vehicle INT16 NOT NULL, lrb.highway INT16 NOT NULL, lrb.direction INT16 NOT NULL, positionDiv5280 INT32 NOT NULL, lrb.cntSpeed UINT64 NOT NULL)  TYPE Void;
+
+# Query 1
+SELECT start, end, highway, direction, positionDiv5280, AVG(speed) AS avgSpeed
+FROM (SELECT creationTS, highway, direction, position / INT32(5280) AS positionDiv5280, speed FROM lrb)
+GROUP BY (highway, direction, positionDiv5280)
+WINDOW SLIDING(creationTS, SIZE 5 MINUTES, ADVANCE BY 1 SEC)
+HAVING avgSpeed < FLOAT32(40)
+INTO q1Checksum;
+----
+
+# Query 2
+SELECT start, end, vehicle, highway, direction, positionDiv5280, COUNT(speed) AS cntSpeed
+FROM (SELECT creationTS, vehicle, highway, direction, position / INT32(5280) AS positionDiv5280, speed FROM lrb)
+GROUP BY (vehicle, highway, direction, positionDiv5280)
+WINDOW SLIDING(creationTS, SIZE 30 SEC, ADVANCE BY 1 SEC)
+INTO q2Checksum;
+----
