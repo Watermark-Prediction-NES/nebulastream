@@ -14,8 +14,11 @@
 
 #include <Runtime/NodeEngineBuilder.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <Configuration/WorkerConfiguration.hpp>
 #include <Identifiers/Identifiers.hpp>
@@ -37,12 +40,17 @@ NodeEngineBuilder::NodeEngineBuilder(const WorkerConfiguration& workerConfigurat
 
 std::unique_ptr<NodeEngine> NodeEngineBuilder::build(const Host& host)
 {
+    const auto& monitorPathStr = workerConfiguration.bufferUsageLogPath.getValue();
+    std::optional<std::filesystem::path> monitorPath
+        = monitorPathStr.empty() ? std::nullopt : std::optional{std::filesystem::path{monitorPathStr}};
     auto bufferManager = BufferManager::create(
         workerConfiguration.totalMemoryInBytes.getValue(),
         workerConfiguration.unpooledMemoryFraction.getValue(),
         NES::BufferAlignment{static_cast<uint32_t>(workerConfiguration.bufferAlignmentInBytes.getValue())},
         static_cast<uint32_t>(workerConfiguration.defaultQueryExecution.operatorBufferSize.getValue()),
-        std::make_shared<NesDefaultMemoryAllocator>());
+        std::make_shared<NesDefaultMemoryAllocator>(),
+        std::move(monitorPath),
+        std::chrono::milliseconds{workerConfiguration.bufferUsageMonitorIntervalMs.getValue()});
     auto queryLog = std::make_shared<QueryLog>();
 
     auto queryEngine = std::make_unique<QueryEngine>(workerConfiguration.queryEngine, statisticsListener, queryLog, bufferManager, host);

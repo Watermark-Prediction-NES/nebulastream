@@ -15,14 +15,17 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 #include <Identifiers/NESStrongType.hpp>
 #include <Runtime/AbstractBufferProvider.hpp>
@@ -81,7 +84,9 @@ public:
         uint32_t numOfBuffers,
         std::shared_ptr<std::pmr::memory_resource> memoryResource,
         size_t unpooledMemoryLimitInBytes,
-        uint32_t alignment);
+        uint32_t alignment,
+        std::optional<std::filesystem::path> monitorFilePath,
+        std::chrono::milliseconds monitorInterval);
 
     /// Creates a new global buffer manager from a total memory budget. The pooled buffer count and the unpooled
     /// memory limit are derived: unpooledLimit = totalMemoryInBytes * unpooledMemoryFraction, the remaining
@@ -91,12 +96,16 @@ public:
     /// @param alignment byte alignment of every buffer; must be a power of two <= page size (a cache line is 64 bytes)
     /// @param bufferSize the size of each pooled buffer in bytes
     /// @param memoryResource resource for allocating and deallocating memory
+    /// @param monitorFilePath optional path; if set, a background thread writes pooled + unpooled buffer usage to this CSV
+    /// @param monitorInterval sampling interval for the buffer-usage monitor
     static std::shared_ptr<BufferManager> create(
         size_t totalMemoryInBytes,
         double unpooledMemoryFraction,
         BufferAlignment alignment,
         uint32_t bufferSize,
-        const std::shared_ptr<std::pmr::memory_resource>& memoryResource);
+        const std::shared_ptr<std::pmr::memory_resource>& memoryResource,
+        std::optional<std::filesystem::path> monitorFilePath = std::nullopt,
+        std::chrono::milliseconds monitorInterval = std::chrono::milliseconds{100});
 
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;
@@ -167,6 +176,10 @@ private:
 
     std::shared_ptr<std::pmr::memory_resource> memoryResource;
     std::atomic<bool> isDestroyed{false};
+
+    /// Buffer-usage monitor: optional jthread that periodically writes pooled+unpooled used counts to CSV.
+    /// Declared last so its destructor runs first (stop+join) before other members are torn down.
+    std::jthread monitorThread;
 };
 
 
