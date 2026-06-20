@@ -1,0 +1,99 @@
+# name: milestone/DEBS_memory.test
+# description: Queries from our DEBS tutorial
+# groups: [milestone, benchmark, large]
+
+# Source definitions
+CREATE LOGICAL SOURCE solarPanels(producerId INT32 NOT NULL, groupId INT32 NOT NULL, producedPower FLOAT64 NOT NULL, timestamp UINT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR solarPanels TYPE Memory;
+ATTACH FILE large/debs/SOLAR_PANELS_TOPIC_1G.csv
+
+CREATE LOGICAL SOURCE windTurbines(producerId INT32 NOT NULL, groupId INT32 NOT NULL, producedPower FLOAT64 NOT NULL, timestamp UINT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR windTurbines TYPE Memory;
+ATTACH FILE large/debs/WIND_TURBINES_TOPIC_5M.csv
+
+CREATE LOGICAL SOURCE consumers(consumerId INT32 NOT NULL, sectorId INT32 NOT NULL, consumedPower FLOAT64 NOT NULL, consumerType VARSIZED NOT NULL, timestamp UINT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR consumers TYPE Memory;
+ATTACH FILE large/debs/CONSUMERS_TOPIC_1G.csv
+
+CREATE SINK consumersChecksum(consumers.consumerId INT32 NOT NULL, consumers.sectorId INT32 NOT NULL, consumers.consumedPower FLOAT64 NOT NULL, consumers.consumerType VARSIZED NOT NULL, consumers.timestamp UINT64 NOT NULL)  TYPE Void;
+CREATE SINK solarPanelsChecksum(solarPanels.producerId INT32 NOT NULL, solarPanels.groupId INT32 NOT NULL, solarPanels.producedPower FLOAT64 NOT NULL, solarPanels.timestamp UINT64 NOT NULL)  TYPE Void;
+CREATE SINK q4Checksum(consumedPower FLOAT64 NOT NULL)  TYPE Void;
+CREATE SINK q5Checksum(producerId INT32 NOT NULL, groupId INT32 NOT NULL, producedPower FLOAT64 NOT NULL, ts UINT64 NOT NULL)  TYPE Void;
+CREATE SINK q6Checksum(source UINT64 NOT NULL, producerId INT32 NOT NULL, groupId INT32 NOT NULL, producedPower FLOAT64 NOT NULL, ts UINT64 NOT NULL)  TYPE Void;
+CREATE SINK winPowerProductionChecksum(solarPanels.start UINT64 NOT NULL, solarPanels.end UINT64 NOT NULL, solarPanels.groupId INT32 NOT NULL, solarPanels.producedPower FLOAT64 NOT NULL)  TYPE Void;
+
+# Query 0a - Simple Source Sink with consumers stream
+SELECT * FROM consumers INTO consumersChecksum;
+----
+
+# Query 0b - Simple Source Sink with solarPanels stream
+SELECT * FROM solarPanels INTO solarPanelsChecksum;
+----
+
+# Query 1 - Filter tuples
+SELECT * FROM consumers WHERE consumedPower >= FLOAT64(400) INTO consumersChecksum;
+----
+
+# Query 2 - Filter with multiple attributes
+SELECT * FROM consumers WHERE consumedPower >= FLOAT64(400) AND sectorId = INT32(1) INTO consumersChecksum;
+----
+
+# Query 3 - Filter with complex expression
+SELECT * FROM consumers WHERE consumedPower >= FLOAT64(1) AND consumedPower < FLOAT64(61) INTO consumersChecksum;
+----
+
+# Query 4 - Filter with complex expression
+SELECT consumedPower / FLOAT64(1000) AS consumedPower FROM consumers INTO q4Checksum;
+----
+
+# Query 5 - Union Queries
+# Results are verified using: https://gist.github.com/ls-1801/d03e4cfbe2957efdace1efe075c5fb95
+SELECT
+    producerId,
+    groupId,
+    producedPower,
+    timestamp as ts
+FROM windTurbines
+UNION
+SELECT
+    producerId,
+    groupId,
+    producedPower,
+    timestamp as ts
+FROM solarPanels
+INTO q5Checksum;
+----
+
+# Query 6 - More union with additional projection to distinguish between union streams
+# Results are verified using: https://gist.github.com/ls-1801/d03e4cfbe2957efdace1efe075c5fb95
+SELECT
+    source,
+    producerId,
+    groupId,
+    producedPower,
+    timestamp as ts
+FROM (
+    SELECT *, UINT64(1) AS source
+    FROM windTurbines
+        UNION
+    SELECT *, UINT64(2) AS source
+    FROM solarPanels
+)
+INTO q6Checksum;
+----
+
+# Query 7 - Window aggregations with tumbling windows
+SELECT start, end, groupId, SUM(producedPower) AS producedPower
+FROM solarPanels
+GROUP BY groupId
+WINDOW TUMBLING(timestamp, SIZE 1 HOUR)
+INTO winPowerProductionChecksum;
+----
+
+# Query 8 - Window aggregations with sliding windows
+SELECT start, end, groupId, SUM(producedPower) AS producedPower
+FROM solarPanels
+GROUP BY groupId
+WINDOW SLIDING(timestamp, SIZE 1 HOUR, ADVANCE BY 10 MINUTES)
+INTO winPowerProductionChecksum;
+----
