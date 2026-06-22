@@ -418,6 +418,14 @@ serializeExecutionResults(const std::vector<RunningQuery>& queries, std::vector<
         {
             failedQueries.emplace_back(queryRan);
         }
+        /// A query that failed or terminated in an unexpected state never had a status attached, so it
+        /// has no meaningful elapsed time. Skip its benchmark row instead of dereferencing the empty
+        /// status in getElapsedTime() -- otherwise a single failed query aborts the whole run (the
+        /// guarding INVARIANT is compiled out in Benchmark builds).
+        if (!queryRan.queryStatus.has_value())
+        {
+            continue;
+        }
         const auto executionTimeInSeconds = queryRan.getElapsedTime().count();
         benchmarkResults.push_back(
             {.queryName = queryRan.systestQuery.testName,
