@@ -458,8 +458,10 @@ nautilus::val<uint64_t> InputFormatter::readBuffer(
     /// a buffer that only contains data from a single tuple may connect two buffers that delimit tuples
     /// we count such a spanning tuple as a leading spanning tuple
     /// a buffer that delimits tuples may form a leading (and a trailing) spanning tuple
-    numProcessedTuples = numProcessedTuples
-        + parseLeadingRecord(executionCtx, executeChild, indexPhaseResult, this->projections, *this->inputFormatIndexer, *this->memoryProvider);
+    numProcessedTuples
+        = numProcessedTuples
+        + parseLeadingRecord(
+              executionCtx, executeChild, indexPhaseResult, this->projections, *this->inputFormatIndexer, *this->memoryProvider);
 
     /// check if the buffer only contains data from a single tuple (does not delimit two tuples)
     /// such a buffer can only form one (leading) spanning tuple, so returning is safe
@@ -472,20 +474,26 @@ nautilus::val<uint64_t> InputFormatter::readBuffer(
     /// determining the offset of a tuple may require parsing the prior tuple
     numProcessedTuples = numProcessedTuples
         + parseRecordsInRawBuffer(
-                                executionCtx, recordBuffer, executeChild, indexPhaseResult, this->projections, *this->inputFormatIndexer, *this->memoryProvider);
+                             executionCtx,
+                             recordBuffer,
+                             executeChild,
+                             indexPhaseResult,
+                             this->projections,
+                             *this->inputFormatIndexer,
+                             *this->memoryProvider);
 
     /// a buffer that delimits tuples usually forms a spanning tuple that continues in the next buffer
     /// determining the offset of the start of that tuple may require parsing all prior records in the raw buffer
     numProcessedTuples = numProcessedTuples
         + parseTrailingRecord(
-                                executionCtx,
-                                recordBuffer,
-                                executeChild,
-                                indexPhaseResult,
-                                this->projections,
-                                *this->inputFormatIndexer,
-                                *this->sequenceShredder,
-                                *this->memoryProvider);
+                             executionCtx,
+                             recordBuffer,
+                             executeChild,
+                             indexPhaseResult,
+                             this->projections,
+                             *this->inputFormatIndexer,
+                             *this->sequenceShredder,
+                             *this->memoryProvider);
 
     return numProcessedTuples;
 }
