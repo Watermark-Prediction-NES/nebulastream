@@ -113,19 +113,29 @@ TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
     return stats;
 }
 
-std::vector<Experiment> buildExperiments()
+/// The distinct clean scenario shapes. Defined once so buildExperiments() and printTraces() agree.
+struct BaseTraces
 {
-    const PiecewiseConstantTraceSource constantFast{{{200, 100, 50}}};
-    const PiecewiseConstantTraceSource rateChange{{{100, 50, 50}, {300, 200, 50}}};
+    PiecewiseConstantTraceSource constantFast{{{200, 100, 50}}};
+    PiecewiseConstantTraceSource rateChange{{{100, 50, 50}, {300, 200, 50}}};
 
     /// Stall: rate 2.0, then the watermark holds flat (eventStep 0) while wall-clock keeps advancing,
     /// then resumes at 2.0. observePrefix lands inside the stall so the predictor must extrapolate
     /// across a stalled watermark.
-    const PiecewiseConstantTraceSource stall{{{100, 100, 50}, {100, 0, 50}, {100, 100, 50}}};
+    PiecewiseConstantTraceSource stall{{{100, 100, 50}, {100, 0, 50}, {100, 100, 50}}};
 
     /// Catch-up: rate 2.0, a shorter stall, then a fast burst (rate 8.0) that races to catch up the
     /// event-time backlog before settling. Breaks extrapolators that carried the stalled rate forward.
-    const PiecewiseConstantTraceSource catchUp{{{100, 100, 50}, {50, 0, 50}, {100, 400, 50}}};
+    PiecewiseConstantTraceSource catchUp{{{100, 100, 50}, {50, 0, 50}, {100, 400, 50}}};
+};
+
+std::vector<Experiment> buildExperiments()
+{
+    const BaseTraces base;
+    const auto& constantFast = base.constantFast;
+    const auto& rateChange = base.rateChange;
+    const auto& stall = base.stall;
+    const auto& catchUp = base.catchUp;
 
     std::vector<Experiment> experiments;
 
@@ -211,6 +221,26 @@ std::vector<PredictorEntry> buildPredictors()
     };
 }
 
+/// Emit the clean scenario shapes as `TRACE,scenario,event_time,wall_clock` rows for the plotting
+/// notebook. benchmark.py splits these out of stdout into traces.csv; the accuracy-table parser
+/// ignores any line that isn't a data row.
+void printTraces()
+{
+    const BaseTraces base;
+    const auto dump = [](const std::string& name, const PiecewiseConstantTraceSource& src)
+    {
+        for (const auto& sample : src.generate())
+        {
+            std::cout << "TRACE," << name << "," << sample.watermarkTs.getRawValue() << "," << sample.wallClock.getRawValue()
+                      << '\n';
+        }
+    };
+    dump("ConstantRate(2.0)", base.constantFast);
+    dump("RateChange(1->4)", base.rateChange);
+    dump("Stall(2.0->0)", base.stall);
+    dump("CatchUp(2.0->8.0)", base.catchUp);
+}
+
 void printHeader()
 {
     std::cout << std::left << std::setw(46) << "Trace" << std::setw(20) << "Predictor" << std::right << std::setw(10) << "Samples"
@@ -255,6 +285,7 @@ int run()
     std::cerr << "[bench] " << totalCells << " cells (" << experiments.size() << " traces x " << predictors.size() << " predictors), "
               << Repetitions << " timed reps each\n";
 
+    printTraces();
     printHeader();
     const auto runStart = std::chrono::steady_clock::now();
     std::size_t cell = 0;

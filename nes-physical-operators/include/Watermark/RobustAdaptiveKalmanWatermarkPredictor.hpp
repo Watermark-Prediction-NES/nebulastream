@@ -73,6 +73,7 @@ public:
     [[nodiscard]] Timestamp predictWallClock(Timestamp target) const override;
 
     [[nodiscard]] double currentRateEstimate() const noexcept { return rateEstimate; }
+
     [[nodiscard]] double currentObservationNoise() const noexcept { return rEstimate; }
 
     /// Q/R are read fresh every observe() and (x, P) is a sufficient statistic, so the tuning can be

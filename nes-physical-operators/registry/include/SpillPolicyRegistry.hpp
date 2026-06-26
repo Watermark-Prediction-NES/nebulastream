@@ -34,7 +34,7 @@ struct SpillPolicyRegistryArguments
     std::chrono::milliseconds horizon{50};
     WatermarkPredictor* predictor{nullptr};
     /// Optional predictor name; consumed by the "predictive" PressureSpillPolicy to pick between built-in
-    /// predictors ("ewma", "kalman"). Ignored by policies that don't use a predictor.
+    /// predictors ("ewma", "kalman", "robustkalman"). Ignored by policies that don't use a predictor.
     std::string predictorName{"ewma"};
 };
 

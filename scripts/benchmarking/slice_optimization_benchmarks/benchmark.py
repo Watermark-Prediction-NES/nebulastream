@@ -26,6 +26,14 @@ Knobs (both sentinel-disabled, 0 = off; see SlicePreallocationConfiguration.hpp)
                                 wrapper (plain slice store), otherwise ewma/kalman/robustkalman
 
 The four corners (off/off, on/off, off/on, on/on) isolate each effect and their interaction.
+
+To reproduce the old predictor-overhead experiment (predictor CPU cost with the slice optimizations
+off and nothing ever spilled), pin the slice knobs off, set --high-bound > 1.0 so the pressure
+threshold is unreachable (predictor runs every tick but decide() never spills — a hard guarantee,
+no buffer-sizing guesswork), and average several runs:
+
+    benchmark.py --horizon 0 --pool 0 --runs 3 --high-bound 2.0 \
+        -q CM1 CM2 LRB1 LRB2 MA YSB1 YSB2 NM5 --predictor off ewma kalman robustkalman
 """
 
 from __future__ import annotations
@@ -99,6 +107,10 @@ BUFFER_OVERRIDES = {
 ### single slow/stuck cell blocks the whole sweep. On timeout the cell is recorded as failed.
 CELL_TIMEOUT_S = 1800
 
+### Runs per cell, averaged. 1 keeps the slice-knob sweep cheap; raise it (e.g. 3) when the metric is
+### a small delta — like the predictor overhead — and run-to-run noise would otherwise swamp it.
+RUNS_PER_CELL = 1
+
 CMAKE_FLAGS = {
     "CMAKE_BUILD_TYPE": "Benchmark",
     "CMAKE_TOOLCHAIN_FILE": "/vcpkg/scripts/buildsystems/vcpkg.cmake",
@@ -110,18 +122,22 @@ CMAKE_TARGETS = ["systest"]
 
 RESULT_COLS = [
     "run_id", "query", "preemptive_horizon_ms", "recycle_pool_size", "threads", "predictor",
-    "time_s", "tuples_per_second", "bytes_per_second", "failure_reason",
+    "runs", "time_s", "tuples_per_second", "bytes_per_second", "failure_reason",
 ]
 
 _INTO_RE = re.compile(r"(INTO\s+\w+)\s*;")
 
 
-def spill_set_clause(predictor: str) -> str:
+def spill_set_clause(predictor: str, high_bound: float | None = None) -> str:
     if predictor == "off":
         return ""
+    ### high_bound > 1.0 makes the pressure threshold unreachable (pressure is a fraction in [0,1]),
+    ### so the predictor still runs every GC tick but decide() never spills — a hard never-spill
+    ### guarantee for the overhead experiment. Omitted -> engine default (0.85), real spilling allowed.
+    bound = f", {high_bound} AS SPILL.HIGH_BOUND" if high_bound is not None else ""
     return (
         f"SET (TRUE AS SPILL.ENABLED, 'predictive' AS SPILL.POLICY, "
-        f"'in-memory' AS SPILL.BACKEND, '{predictor}' AS SPILL.PREDICTOR)"
+        f"'in-memory' AS SPILL.BACKEND, '{predictor}' AS SPILL.PREDICTOR{bound})"
     )
 
 
@@ -146,7 +162,8 @@ def cmake_configure_and_build() -> None:
     sh(f"/usr/bin/cmake --build {BUILD_DIR} --target {' '.join(CMAKE_TARGETS)} -- -j {jobs}", env=env)
 
 
-def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int, predictor: str, cell_dir: Path) -> dict:
+def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int, predictor: str,
+             runs: int, high_bound: float | None, cell_dir: Path) -> dict:
     cell_dir.mkdir(parents=True, exist_ok=True)
     buf_size, num_buffers = BUFFER_OVERRIDES.get(qname, (BUFFER_SIZE_BYTES, BUFFERS_IN_GLOBAL_POOL))
     worker_cfg = " ".join([
@@ -163,33 +180,48 @@ def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int,
     rel_path, _, idx = query_test.partition(":")
     src_test = (SOURCE_DIR / rel_path).resolve()
     dst_test = cell_dir / src_test.name
-    patch_test_file(src_test, dst_test, spill_set_clause(predictor))
+    patch_test_file(src_test, dst_test, spill_set_clause(predictor, high_bound))
     test_path = f"{dst_test}:{idx}" if idx else str(dst_test)
-    cmd = (
-        f"{SYSTEST_BIN} -b -t {test_path} "
-        f"--data {TESTDATA_DIR} --workingDir={cell_dir} -- {worker_cfg}"
-    )
-    log = cell_dir / "systest.log"
-    try:
-        with log.open("w") as f:
-            subprocess.run(cmd, shell=True, check=True, stdout=f, stderr=subprocess.STDOUT, timeout=CELL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return {"failure_reason": f"systest timeout ({CELL_TIMEOUT_S}s)"}
-    except subprocess.CalledProcessError as exc:
-        return {"failure_reason": f"systest exit {exc.returncode}"}
 
-    results_path = cell_dir / "BenchmarkResults.json"
-    if not results_path.exists():
-        return {"failure_reason": "no BenchmarkResults.json"}
-    rows = json.loads(results_path.read_text())
-    if not rows:
-        return {"failure_reason": "empty BenchmarkResults.json"}
-    ### One systest call → one (or more) query rows. We sum across rows in the same file index
-    ### (typically just 1) so the cell yields one summary line.
+    times: list[float] = []
+    tps: list[float] = []
+    bps: list[float] = []
+    for run in range(runs):
+        ### Fresh working dir per run so a stale BenchmarkResults.json can't be misread as this run's.
+        working_dir = cell_dir / f"run_{run}"
+        if working_dir.exists():
+            shutil.rmtree(working_dir)
+        working_dir.mkdir(parents=True)
+        cmd = (
+            f"{SYSTEST_BIN} -b -t {test_path} "
+            f"--data {TESTDATA_DIR} --workingDir={working_dir} -- {worker_cfg}"
+        )
+        log = working_dir / "systest.log"
+        try:
+            with log.open("w") as f:
+                subprocess.run(cmd, shell=True, check=True, stdout=f, stderr=subprocess.STDOUT, timeout=CELL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return {"runs": len(times), "failure_reason": f"systest timeout ({CELL_TIMEOUT_S}s)"}
+        except subprocess.CalledProcessError as exc:
+            return {"runs": len(times), "failure_reason": f"systest exit {exc.returncode}"}
+
+        results_path = working_dir / "BenchmarkResults.json"
+        if not results_path.exists():
+            return {"runs": len(times), "failure_reason": "no BenchmarkResults.json"}
+        rows = json.loads(results_path.read_text())
+        if not rows:
+            return {"runs": len(times), "failure_reason": "empty BenchmarkResults.json"}
+        ### One systest call → one (or more) query rows; sum across rows in the same file index
+        ### (typically just 1) so each run yields one number, then average over runs below.
+        times.append(sum(float(r["time"]) for r in rows))
+        tps.append(sum(float(r["tuplesPerSecond"]) for r in rows))
+        bps.append(sum(float(r["bytesPerSecond"]) for r in rows))
+
     return {
-        "time_s": sum(float(r["time"]) for r in rows),
-        "tuples_per_second": sum(float(r["tuplesPerSecond"]) for r in rows),
-        "bytes_per_second": sum(float(r["bytesPerSecond"]) for r in rows),
+        "runs": len(times),
+        "time_s": sum(times) / len(times),
+        "tuples_per_second": sum(tps) / len(tps),
+        "bytes_per_second": sum(bps) / len(bps),
         "failure_reason": "",
     }
 
@@ -214,6 +246,9 @@ def parse_argv(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--pool", nargs="+", type=int, help=f"override RECYCLE_POOL_SIZE (default {RECYCLE_POOL_SIZE})")
     p.add_argument("--threads", nargs="+", type=int, help=f"override WORKER_THREADS (default {WORKER_THREADS})")
     p.add_argument("--predictor", nargs="+", help=f"override PREDICTORS (default {PREDICTORS})")
+    p.add_argument("--runs", type=int, help=f"runs per cell, averaged (default {RUNS_PER_CELL})")
+    p.add_argument("--high-bound", type=float,
+                   help="SPILL.HIGH_BOUND override; >1.0 guarantees never-spill (predictor overhead only)")
     return p.parse_args(argv)
 
 
@@ -238,6 +273,7 @@ def main(argv: list[str]) -> int:
     pools = args.pool or RECYCLE_POOL_SIZE
     threads_list = args.threads or WORKER_THREADS
     predictors = args.predictor or PREDICTORS
+    runs = args.runs or RUNS_PER_CELL
 
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = RESULTS_ROOT / run_id
@@ -266,9 +302,9 @@ def main(argv: list[str]) -> int:
                 "run_id": run_id, "query": qname,
                 "preemptive_horizon_ms": horizon, "recycle_pool_size": pool, "threads": threads,
                 "predictor": predictor,
-                "time_s": "", "tuples_per_second": "", "bytes_per_second": "", "failure_reason": "",
+                "runs": "", "time_s": "", "tuples_per_second": "", "bytes_per_second": "", "failure_reason": "",
             }
-            base.update(run_cell(qname, qpath, horizon, pool, threads, predictor, cell_dir))
+            base.update(run_cell(qname, qpath, horizon, pool, threads, predictor, runs, args.high_bound, cell_dir))
             writer.writerow(base)
             f.flush()
             if base["failure_reason"]:

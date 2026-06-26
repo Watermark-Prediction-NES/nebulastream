@@ -48,7 +48,7 @@ struct SpillConfiguration
     std::chrono::milliseconds predictionHorizon{50};
 
     /// Watermark predictor selection for `policyName == "predictive"`. Recognised values: "ewma",
-    /// "kalman". Other policies ignore this field.
+    /// "kalman", "robustkalman". Other policies ignore this field.
     std::string predictorName{"ewma"};
 };
 

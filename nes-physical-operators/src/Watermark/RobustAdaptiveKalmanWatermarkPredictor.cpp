@@ -32,8 +32,7 @@ namespace
 constexpr double MIN_RATE = 1e-12;
 }
 
-RobustAdaptiveKalmanWatermarkPredictor::RobustAdaptiveKalmanWatermarkPredictor()
-    : RobustAdaptiveKalmanWatermarkPredictor{Config{}}
+RobustAdaptiveKalmanWatermarkPredictor::RobustAdaptiveKalmanWatermarkPredictor() : RobustAdaptiveKalmanWatermarkPredictor{Config{}}
 {
 }
 
@@ -128,8 +127,7 @@ void RobustAdaptiveKalmanWatermarkPredictor::observe(const Timestamp watermarkTs
     if (cfg.rAdaptForgetting > 0.0 && !regimeActive)
     {
         const double innovationSq = innovation * innovation;
-        empInnovVar = hasEmpInnovVar ? ((1.0 - cfg.rAdaptForgetting) * empInnovVar) + (cfg.rAdaptForgetting * innovationSq)
-                                     : innovationSq;
+        empInnovVar = hasEmpInnovVar ? ((1.0 - cfg.rAdaptForgetting) * empInnovVar) + (cfg.rAdaptForgetting * innovationSq) : innovationSq;
         hasEmpInnovVar = true;
         rEstimate = std::max(empInnovVar - predictedVarWatermark, cfg.rFloor);
     }

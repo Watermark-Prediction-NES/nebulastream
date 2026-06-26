@@ -45,7 +45,7 @@ RESULT_COLS = ["trace", "predictor", "samples", "mae", "rmse", "mape_pct", "max_
 ### Trace name may contain spaces; predictor names are bounded by their fixed pattern.
 _ROW_RE = re.compile(
     r"^(?P<trace>\S.*?)\s{2,}"
-    r"(?P<predictor>(?:EWMA|Kalman)\([^)]*\))\s+"
+    r"(?P<predictor>(?:EWMA|Kalman|RobustAdaptiveKalman)(?:\([^)]*\))?)\s+"
     r"(?P<samples>\d+)\s+"
     r"(?P<mae>[\d.]+)\s+"
     r"(?P<rmse>[\d.]+)\s+"
@@ -73,6 +73,16 @@ def cmake_build(targets: list[str]) -> None:
     env = dict(os.environ, MOLD_JOBS=str(cfg.MOLD_JOBS), NINJA_STATUS="[%f/%t %p %es] ")
     jobs = os.cpu_count() or 4
     sh(f"/usr/bin/cmake --build {cfg.BUILD_DIR} --target {target_arg} -- -j {jobs}", env=env)
+
+
+def parse_trace_rows(output: str) -> list[tuple]:
+    """Pull the `TRACE,scenario,event,wall` lines the binary emits for the scenario-shape plot."""
+    rows = []
+    for line in output.splitlines():
+        if line.startswith("TRACE,"):
+            _, scenario, event, wall = line.split(",", 3)
+            rows.append((scenario, int(event), int(wall)))
+    return rows
 
 
 def parse_rows(output: str) -> list[dict]:
@@ -135,26 +145,40 @@ def main(argv: list[str]) -> int:
         w.writeheader()
         w.writerows(rows)
 
-    print(f"[bench] done. {len(rows)} rows → {csv_path}", flush=True)
+    ### Scenario shapes -> traces.csv next to results.csv, plus the notebook's read location.
+    trace_rows = parse_trace_rows(completed.stdout)
+    for traces_path in (run_dir / "traces.csv", cfg.RESULTS_ROOT / "traces.csv"):
+        with traces_path.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["scenario", "event_time", "wall_clock"])
+            w.writerows(trace_rows)
+
+    print(f"[bench] done. {len(rows)} rows, {len(trace_rows)} trace samples → {csv_path}", flush=True)
     assert rows, "parser produced no rows — table format probably changed; check output.txt"
     return 0
 
 
 def _demo() -> None:
+    trace_sample = "TRACE,Stall(2.0->0),1500,2000\nTRACE,CatchUp(2.0->8.0),3000,2500\n"
+    tr = parse_trace_rows(trace_sample)
+    assert tr == [("Stall(2.0->0)", 1500, 2000), ("CatchUp(2.0->8.0)", 3000, 2500)], tr
+
     sample = (
         "Trace                                          Predictor              Samples           MAE          RMSE     MAPE(%)        MaxErr    Reps        MeanMs         MinMs       ns/pred\n"
         + "-" * 180 + "\n"
         "ConstantRate(2.0) clean                       EWMA(alpha=0.3)              100         12.34         15.67        3.45         42.10       5        998.20        995.10          9.98\n"
         "ConstantRate(2.0) clean                       Kalman(default)              100          8.20         11.05        2.10         30.00       5       1203.40       1198.70         12.03\n"
+        "ConstantRate(2.0) clean                       RobustAdaptiveKalman         100          7.10          9.90        1.80         25.00       5       1300.00       1295.00         13.00\n"
         "\n"
     )
     rows = parse_rows(sample)
-    assert len(rows) == 2, rows
+    assert len(rows) == 3, rows
     assert rows[0]["trace"] == "ConstantRate(2.0) clean"
     assert rows[0]["predictor"] == "EWMA(alpha=0.3)"
     assert rows[0]["samples"] == 100
     assert rows[1]["predictor"] == "Kalman(default)"
     assert rows[1]["mae"] == 8.20
+    assert rows[2]["predictor"] == "RobustAdaptiveKalman"
     assert rows[0]["reps"] == 5
     assert rows[0]["ns_per_predict"] == 9.98
     assert rows[1]["min_ms"] == 1198.70

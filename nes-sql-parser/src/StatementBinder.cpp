@@ -579,10 +579,38 @@ public:
                                 target = std::get<std::string>(*literal);
                             }
                         };
+                        const auto readDouble = [&](const std::string& key, double& target)
+                        {
+                            if (auto it = spillIter->second.find(key); it != spillIter->second.end())
+                            {
+                                auto* literal = std::get_if<Literal>(&it->second);
+                                if (literal == nullptr)
+                                {
+                                    throw InvalidQuerySyntax("SPILL." + key + " must be a number");
+                                }
+                                if (auto* d = std::get_if<double>(literal))
+                                {
+                                    target = *d;
+                                }
+                                else if (auto* i = std::get_if<int64_t>(literal))
+                                {
+                                    target = static_cast<double>(*i);
+                                }
+                                else if (auto* u = std::get_if<uint64_t>(literal))
+                                {
+                                    target = static_cast<double>(*u);
+                                }
+                                else
+                                {
+                                    throw InvalidQuerySyntax("SPILL." + key + " must be a number");
+                                }
+                            }
+                        };
                         readBool("ENABLED", cfg.enabled);
                         readString("POLICY", cfg.policyName);
                         readString("BACKEND", cfg.storageBackendName);
                         readString("PREDICTOR", cfg.predictorName);
+                        readDouble("HIGH_BOUND", cfg.highMemoryBound);
                         spillCfg = cfg;
                     }
                 }
