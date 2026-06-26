@@ -15,12 +15,15 @@
 """Measure the effect of preemptive slice creation and slice-recycle pool on memory-source
 benchmark queries.
 
-Sweep: cartesian product of (query × preemptive_create_horizon_ms × recycle_pool_size × threads).
+Sweep: cartesian product of
+(query × preemptive_create_horizon_ms × recycle_pool_size × threads × predictor).
 Each cell runs `systest -b` once and appends one row to results/<run-id>/results.csv.
 
 Knobs (both sentinel-disabled, 0 = off; see SlicePreallocationConfiguration.hpp):
   preemptive_create_horizon_ms  build-side lookahead, creates upcoming slices in one critical section
   recycle_pool_size             LIFO of slices retired by probe-side GC, reused by build-side
+  predictor                     watermark predictor for the predictive spill policy; "off" = no spill
+                                wrapper (plain slice store), otherwise ewma/kalman/robustkalman
 
 The four corners (off/off, on/off, off/on, on/on) isolate each effect and their interaction.
 """
@@ -32,6 +35,7 @@ import csv
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +62,10 @@ QUERIES = {
     "NM5": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:04",
     "NM8": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:05",
     "NM8_Variant": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:06",
+    ### Slice-store stress: 1 second slide keeps thousands of slices concurrently active
+    ### (~23000 for the 1-DAY aggregation, ~3600 for the 1-HOUR join over bid_6GB.csv's ~6.4h span).
+    "SLICE_AGG": "nes-systests/benchmark/memory-source/SliceOptimization_memory.test:01",
+    "SLICE_JOIN": "nes-systests/benchmark/memory-source/SliceOptimization_memory.test:02",
 }
 
 ### 0 = off. Same value used for both knobs so the matrix stays a clean 2x2 by default
@@ -65,6 +73,10 @@ QUERIES = {
 PREEMPTIVE_HORIZON_MS = [0, 10]
 RECYCLE_POOL_SIZE = [0, 32]
 WORKER_THREADS = [1, 16]
+
+### "off" = no SET clause (plain slice store, no spill wrapper); the rest enable the predictive spill
+### policy with the named watermark predictor. Recognised predictors: ewma, kalman, robustkalman.
+PREDICTORS = ["off", "ewma", "kalman", "robustkalman"]
 
 ### Default worker buffer config — large (1MB) buffers keep cells fast.
 BUFFER_SIZE_BYTES = 1_048_576
@@ -77,6 +89,10 @@ PAGE_SIZE = 8192
 BUFFER_OVERRIDES = {
     "NM8_Variant": (131_072, 320_000),
     "NM8": (131_072, 320_000),
+    ### Thousands of live slices make these the heaviest queries in the suite; give them the same
+    ### finer-grained allocation + larger pool so the default 1MB pool doesn't stall them.
+    "SLICE_AGG": (131_072, 320_000),
+    "SLICE_JOIN": (131_072, 320_000),
 }
 
 ### Per-cell wall-clock cap. The heavy varsized queries can run for many minutes; without a bound a
@@ -93,9 +109,29 @@ CMAKE_FLAGS = {
 CMAKE_TARGETS = ["systest"]
 
 RESULT_COLS = [
-    "run_id", "query", "preemptive_horizon_ms", "recycle_pool_size", "threads",
+    "run_id", "query", "preemptive_horizon_ms", "recycle_pool_size", "threads", "predictor",
     "time_s", "tuples_per_second", "bytes_per_second", "failure_reason",
 ]
+
+_INTO_RE = re.compile(r"(INTO\s+\w+)\s*;")
+
+
+def spill_set_clause(predictor: str) -> str:
+    if predictor == "off":
+        return ""
+    return (
+        f"SET (TRUE AS SPILL.ENABLED, 'predictive' AS SPILL.POLICY, "
+        f"'in-memory' AS SPILL.BACKEND, '{predictor}' AS SPILL.PREDICTOR)"
+    )
+
+
+def patch_test_file(src: Path, dst: Path, set_clause: str) -> None:
+    """Append `set_clause` before the `;` of every `INTO <sink>;` query in `src`."""
+    content = src.read_text()
+    if set_clause:
+        content = _INTO_RE.sub(rf"\1 {set_clause};", content)
+    dst.write_text(content)
+
 
 def sh(cmd: str, *, env: dict | None = None) -> None:
     print(f"[bench] $ {cmd}", flush=True)
@@ -110,7 +146,7 @@ def cmake_configure_and_build() -> None:
     sh(f"/usr/bin/cmake --build {BUILD_DIR} --target {' '.join(CMAKE_TARGETS)} -- -j {jobs}", env=env)
 
 
-def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int, cell_dir: Path) -> dict:
+def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int, predictor: str, cell_dir: Path) -> dict:
     cell_dir.mkdir(parents=True, exist_ok=True)
     buf_size, num_buffers = BUFFER_OVERRIDES.get(qname, (BUFFER_SIZE_BYTES, BUFFERS_IN_GLOBAL_POOL))
     worker_cfg = " ".join([
@@ -122,7 +158,13 @@ def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int,
         f"--worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms={horizon}",
         f"--worker.default_query_execution.slice_preallocation.recycle_pool_size={pool}",
     ])
-    test_path = (SOURCE_DIR / query_test).resolve()
+    ### query_test is "<rel-path>:<idx>"; patch the SET clause onto a copy in the cell dir and
+    ### re-attach the index. systest splits file:idx itself.
+    rel_path, _, idx = query_test.partition(":")
+    src_test = (SOURCE_DIR / rel_path).resolve()
+    dst_test = cell_dir / src_test.name
+    patch_test_file(src_test, dst_test, spill_set_clause(predictor))
+    test_path = f"{dst_test}:{idx}" if idx else str(dst_test)
     cmd = (
         f"{SYSTEST_BIN} -b -t {test_path} "
         f"--data {TESTDATA_DIR} --workingDir={cell_dir} -- {worker_cfg}"
@@ -171,6 +213,7 @@ def parse_argv(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--horizon", nargs="+", type=int, help=f"override PREEMPTIVE_HORIZON_MS (default {PREEMPTIVE_HORIZON_MS})")
     p.add_argument("--pool", nargs="+", type=int, help=f"override RECYCLE_POOL_SIZE (default {RECYCLE_POOL_SIZE})")
     p.add_argument("--threads", nargs="+", type=int, help=f"override WORKER_THREADS (default {WORKER_THREADS})")
+    p.add_argument("--predictor", nargs="+", help=f"override PREDICTORS (default {PREDICTORS})")
     return p.parse_args(argv)
 
 
@@ -194,13 +237,14 @@ def main(argv: list[str]) -> int:
     horizons = args.horizon or PREEMPTIVE_HORIZON_MS
     pools = args.pool or RECYCLE_POOL_SIZE
     threads_list = args.threads or WORKER_THREADS
+    predictors = args.predictor or PREDICTORS
 
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = RESULTS_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     csv_path = run_dir / "results.csv"
 
-    cells = list(itertools.product(queries.items(), horizons, pools, threads_list))
+    cells = list(itertools.product(queries.items(), horizons, pools, threads_list, predictors))
     print(f"[bench] {len(cells)} cells → {csv_path}", flush=True)
 
     with csv_path.open("w", newline="") as f:
@@ -210,8 +254,8 @@ def main(argv: list[str]) -> int:
 
         tty = sys.stdout.isatty()
         start_t = time.monotonic()
-        for i, ((qname, qpath), horizon, pool, threads) in enumerate(cells, start=1):
-            slug = f"{qname}_h{horizon}_p{pool}_t{threads}"
+        for i, ((qname, qpath), horizon, pool, threads, predictor) in enumerate(cells, start=1):
+            slug = f"{qname}_h{horizon}_p{pool}_t{threads}_{predictor}"
             cell_dir = run_dir / slug
             prefix = f"[bench] cell {i}/{len(cells)}: {slug}"
             ### On a TTY, show a live "running" line; \r overwrites it in place with the result so each
@@ -221,9 +265,10 @@ def main(argv: list[str]) -> int:
             base = {
                 "run_id": run_id, "query": qname,
                 "preemptive_horizon_ms": horizon, "recycle_pool_size": pool, "threads": threads,
+                "predictor": predictor,
                 "time_s": "", "tuples_per_second": "", "bytes_per_second": "", "failure_reason": "",
             }
-            base.update(run_cell(qname, qpath, horizon, pool, threads, cell_dir))
+            base.update(run_cell(qname, qpath, horizon, pool, threads, predictor, cell_dir))
             writer.writerow(base)
             f.flush()
             if base["failure_reason"]:

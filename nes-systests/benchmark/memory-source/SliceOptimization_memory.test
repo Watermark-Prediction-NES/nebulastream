@@ -1,0 +1,42 @@
+# name: benchmark/SliceOptimization_memory.test
+# description: Slice-store stress queries for scripts/benchmarking/slice_optimization_benchmarks.
+#   Both use a 1 second slide so a large number of slices stay concurrently active, which is what the
+#   preemptive_create_horizon_ms / recycle_pool_size knobs target. bid_6GB.csv spans ~6.4h, so the
+#   1 DAY aggregation holds ~23000 active slices and the 1 HOUR join holds ~3600.
+# groups: [benchmark, large, Aggregation, Join]
+
+# bid timestamps are epoch milliseconds; window units (SEC/HOUR/DAY) map straight through.
+CREATE LOGICAL SOURCE bid(timestamp UINT64 NOT NULL, auctionId INT32 NOT NULL, bidder INT32 NOT NULL, price FLOAT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR bid TYPE Memory;
+ATTACH FILE large/nexmark/bid_6GB.csv
+
+# Second view over the same file for the self-join. Keeps `timestamp` (the window field) but renames
+# the rest to avoid ambiguity in the ON clause and projection.
+CREATE LOGICAL SOURCE bidJoin(timestamp UINT64 NOT NULL, auctionId2 INT32 NOT NULL, bidder2 INT32 NOT NULL, price2 FLOAT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR bidJoin TYPE Memory;
+ATTACH FILE large/nexmark/bid_6GB.csv
+
+CREATE SINK sliceAggSink(bid.start UINT64 NOT NULL, bid.end UINT64 NOT NULL, bid.auctionId INT32 NOT NULL, bid.num UINT64 NOT NULL) TYPE Void;
+CREATE SINK sliceJoinSink(bidbidJoin.start UINT64 NOT NULL, bidbidJoin.end UINT64 NOT NULL, bid.auctionId INT32 NOT NULL, bid.bidder INT32 NOT NULL, bid.price FLOAT64 NOT NULL, bidJoin.auctionId2 INT32 NOT NULL, bidJoin.bidder2 INT32 NOT NULL, bidJoin.price2 FLOAT64 NOT NULL) TYPE Void;
+
+
+# Query 01 - slice-heavy aggregation
+### SIZE 1 DAY -> ~23000 active slices over the ~6.4h span; lower to 1 HOUR for ~3600.
+SELECT start, end, auctionId, COUNT(auctionId) AS num
+FROM bid
+GROUP BY auctionId
+WINDOW SLIDING(timestamp, SIZE 1 DAY, ADVANCE BY 1 SEC)
+INTO sliceAggSink;
+----
+
+
+# Query 02 - slice-heavy hash join (self-join on the same file)
+### Join on price (near-unique, bounded fan-out). bidder/auctionId are heavily skewed and would
+### cartesian-explode. SIZE 1 HOUR -> ~3600 slices; join slices store tuples on both sides, so keep
+### the window smaller than the aggregation.
+SELECT start, end, auctionId, bidder, price, auctionId2, bidder2, price2
+FROM (SELECT * FROM bid)
+INNER JOIN (SELECT * FROM bidJoin) ON price = price2
+WINDOW SLIDING(timestamp, SIZE 1 HOUR, ADVANCE BY 1 SEC)
+INTO sliceJoinSink;
+----

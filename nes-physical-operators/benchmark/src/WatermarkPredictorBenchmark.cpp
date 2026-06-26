@@ -30,6 +30,7 @@
 #include <Trace/PiecewiseConstantTraceSource.hpp>
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
+#include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 #include <BenchmarkRunner.hpp>
 #include <Experiment.hpp>
@@ -115,16 +116,21 @@ TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
 std::vector<Experiment> buildExperiments()
 {
     const PiecewiseConstantTraceSource constantFast{{{200, 100, 50}}};
-    const PiecewiseConstantTraceSource constantSlow{{{200, 25, 50}}};
     const PiecewiseConstantTraceSource rateChange{{{100, 50, 50}, {300, 200, 50}}};
-    const PiecewiseConstantTraceSource slowdown{{{100, 200, 50}, {300, 100, 50}}};
-    const PiecewiseConstantTraceSource threePhase{{{80, 50, 50}, {80, 200, 50}, {120, 100, 50}}};
+
+    /// Stall: rate 2.0, then the watermark holds flat (eventStep 0) while wall-clock keeps advancing,
+    /// then resumes at 2.0. observePrefix lands inside the stall so the predictor must extrapolate
+    /// across a stalled watermark.
+    const PiecewiseConstantTraceSource stall{{{100, 100, 50}, {100, 0, 50}, {100, 100, 50}}};
+
+    /// Catch-up: rate 2.0, a shorter stall, then a fast burst (rate 8.0) that races to catch up the
+    /// event-time backlog before settling. Breaks extrapolators that carried the stalled rate forward.
+    const PiecewiseConstantTraceSource catchUp{{{100, 100, 50}, {50, 0, 50}, {100, 400, 50}}};
 
     std::vector<Experiment> experiments;
 
-    /// Clean baselines.
+    /// Clean baseline.
     experiments.push_back(makeCleanExperiment("ConstantRate(2.0) clean", constantFast, 100, {500, 1000, 2000, 5000}));
-    experiments.push_back(makeCleanExperiment("ConstantRate(0.5) clean", constantSlow, 100, {500, 1000, 2000}));
 
     /// Adaptation-lag sweep on the rate-change trace.
     for (const auto samplesAfter : {2, 5, 10, 20, 50, 100})
@@ -165,26 +171,43 @@ std::vector<Experiment> buildExperiments()
             makeNoisyExperiment("ConstantRate(2.0) + " + pctLabel + "% heavy stragglers", constantFast, sweep, 100, {500, 1000, 2000}));
     }
 
-    /// Slowdown and three-phase clean.
-    for (const auto samplesAfter : {2, 10, 50})
+    /// Stall: predict at several points into the flat region (watermark not advancing).
+    for (const auto samplesIntoStall : {2, 5, 10, 25, 50})
     {
         experiments.push_back(makeCleanExperiment(
-            "Slowdown(4->2) +" + std::to_string(samplesAfter) + " samples clean",
-            slowdown,
-            100 + static_cast<size_t>(samplesAfter),
-            {200, 500, 1000}));
+            "Stall(2.0->0) +" + std::to_string(samplesIntoStall) + " samples clean",
+            stall,
+            100 + static_cast<size_t>(samplesIntoStall),
+            {500, 1000, 2000}));
     }
-    experiments.push_back(makeCleanExperiment("Three phases (1->4->2) clean", threePhase, 170, {500, 1000, 2000}));
+
+    /// Catch-up: predict just before, during, and after the fast burst that drains the backlog.
+    for (const auto samplesIntoBurst : {2, 5, 10, 25, 50})
+    {
+        experiments.push_back(makeCleanExperiment(
+            "CatchUp(2.0->8.0) +" + std::to_string(samplesIntoBurst) + " samples clean",
+            catchUp,
+            150 + static_cast<size_t>(samplesIntoBurst),
+            {500, 1000, 2000}));
+    }
 
     return experiments;
 }
 
 std::vector<PredictorEntry> buildPredictors()
 {
+    KalmanWatermarkPredictor::Config config1{
+        .processNoiseWatermark = 1, .processNoiseRate = 1e-4, .observationNoise = 1.0, .initialRateVariance = 1e6};
+    KalmanWatermarkPredictor::Config config2{
+        .processNoiseWatermark = 1, .processNoiseRate = 1e-1, .observationNoise = 100, .initialRateVariance = 1e6};
+
     return {
         {.name = "EWMA(alpha=0.3)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(0.3); }},
+        {.name = "EWMA(alpha=0.5)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(0.5); }},
         {.name = "EWMA(alpha=1.0)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(1.0); }},
-        {.name = "Kalman(default)", .make = [] { return std::make_unique<KalmanWatermarkPredictor>(); }},
+        {.name = "Kalman(config1)", .make = [config = config1] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
+        {.name = "Kalman(config2)", .make = [config = config2] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
+        {.name = "RobustAdaptiveKalman", .make = [] { return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>(); }},
     };
 }
 

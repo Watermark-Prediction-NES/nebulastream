@@ -21,6 +21,7 @@ Predictor variants:
     off     -- no SET clause: query runs against DefaultTimeBasedSliceStore (no spill wrapper).
     ewma    -- spill enabled, predictive policy, EWMA predictor, in-memory backend.
     kalman  -- same as above but Kalman predictor.
+    robustkalman -- same as above but robust/adaptive Kalman predictor.
 
 Both predictor cells use a generous buffer pool (`NUMBER_OF_BUFFERS`) so memory pressure stays
 below the policy's highBound (default 0.85): observe() is called every GC tick (paying the
@@ -78,7 +79,7 @@ QUERIES = [
 ]
 
 ### off → no SET (no spill wrapper); ewma/kalman → predictive policy, in-memory backend.
-PREDICTORS = ["off", "ewma", "kalman"]
+PREDICTORS = ["off", "ewma", "kalman", "robustkalman"]
 
 ### Worker knobs. Buffer pool sized so memoryPressure < 0.85 → predictor never triggers a spill.
 ### 40000 (40GB at 1MB/buffer) is the smallest pool at which the heaviest query (NM4, a self-join of
@@ -297,6 +298,7 @@ def _selfcheck() -> None:
     assert spill_set_clause("off") == ""
     assert "'predictive' AS SPILL.POLICY" in spill_set_clause("ewma")
     assert "'kalman' AS SPILL.PREDICTOR" in spill_set_clause("kalman")
+    assert "'robustkalman' AS SPILL.PREDICTOR" in spill_set_clause("robustkalman")
 
 
 if __name__ == "__main__":
