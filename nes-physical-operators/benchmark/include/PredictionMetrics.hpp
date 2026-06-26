@@ -15,18 +15,21 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace NES
 {
 
-/// Aggregate accuracy metrics over all (target, prediction, truth) triples evaluated.
-struct PredictionMetrics
+/// One scored prediction from the rolling (prequential) evaluation: after observing the eval-tick
+/// sample, the predictor was asked for the wall-clock crossing of (last watermark + horizon).
+/// Aggregation (MAE/RMSE/MAPE/...) is done downstream in the plotting notebook, not here.
+struct PredictionSample
 {
-    double mae{0.0}; ///< Mean absolute error in wall-clock units.
-    double rmse{0.0}; ///< Root mean squared error in wall-clock units.
-    double mape{0.0}; ///< Mean absolute percentage error = mean(|predicted - true| / |true|) * 100.
-    double maxError{0.0}; ///< Worst-case absolute error in wall-clock units.
-    size_t samples{0}; ///< Number of (predicted, true) pairs that contributed.
+    size_t evalOffset; ///< Samples since warm-up ended (0 = first online prediction).
+    uint64_t horizon; ///< Event-time look-ahead added to the last observed watermark.
+    double absErr; ///< |predicted - true| wall-clock.
+    double signedErr; ///< predicted - true wall-clock (sign = early/late).
+    double trueWall; ///< Ground-truth crossing wall-clock; MAPE denominator (use only when > 0).
 };
 
 }

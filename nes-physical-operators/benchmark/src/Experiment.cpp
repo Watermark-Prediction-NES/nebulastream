@@ -26,19 +26,19 @@
 namespace NES
 {
 
-Experiment makeCleanExperiment(std::string name, const TraceSource& source, size_t observePrefix, std::vector<uint64_t> horizons)
+Experiment makeCleanExperiment(std::string name, const TraceSource& source, size_t warmup, std::vector<uint64_t> horizons)
 {
     auto trace = source.generate();
     return Experiment{
         .name = std::move(name),
         .observed = trace,
         .truth = std::move(trace),
-        .observePrefix = observePrefix,
+        .warmup = warmup,
         .horizons = std::move(horizons)};
 }
 
 Experiment makeNoisyExperiment(
-    std::string name, const TraceSource& source, const NoiseModel& noise, size_t observePrefix, std::vector<uint64_t> horizons)
+    std::string name, const TraceSource& source, const NoiseModel& noise, size_t warmup, std::vector<uint64_t> horizons)
 {
     auto clean = source.generate();
     auto noisy = noise.apply(clean);
@@ -46,7 +46,7 @@ Experiment makeNoisyExperiment(
         .name = std::move(name),
         .observed = std::move(noisy),
         .truth = std::move(clean),
-        .observePrefix = observePrefix,
+        .warmup = warmup,
         .horizons = std::move(horizons)};
 }
 

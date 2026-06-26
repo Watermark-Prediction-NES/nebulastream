@@ -14,10 +14,10 @@
 
 """Wrapper around the C++ WatermarkPredictorBenchmark target.
 
-Builds the binary (unless --skip-build), runs it, captures stdout to output.txt, and
-parses the fixed-width table the binary prints into results.csv. No queries run — this
-measures predictor accuracy (MAE/RMSE/MAPE/MaxErr) and predictWallClock() timing
-(Reps/MeanMs/MinMs/ns-per-predict).
+Builds the binary (unless --skip-build), runs it, captures stdout to output.txt, and splits
+the CSV stream it prints into results.csv (one row per scored prediction from the rolling
+prequential evaluation) and traces.csv (the clean scenario shapes). No queries run — this
+measures predictor accuracy per (eval_offset, horizon) and predictWallClock() timing.
 
 CLI:
     --skip-build      Skip cmake configure/build (use existing binary).
@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -38,24 +37,9 @@ from pathlib import Path
 
 import config as cfg
 
-RESULT_COLS = ["trace", "predictor", "samples", "mae", "rmse", "mape_pct", "max_err", "reps", "mean_ms", "min_ms", "ns_per_predict"]
-
-### Matches one data row from WatermarkPredictorBenchmark stdout, e.g.
-###   "ConstantRate(2.0) clean              EWMA(alpha=0.3)     100   12.34 ...   5   998.20   995.10   9.98"
-### Trace name may contain spaces; predictor names are bounded by their fixed pattern.
-_ROW_RE = re.compile(
-    r"^(?P<trace>\S.*?)\s{2,}"
-    r"(?P<predictor>(?:EWMA|Kalman|RobustAdaptiveKalman)(?:\([^)]*\))?)\s+"
-    r"(?P<samples>\d+)\s+"
-    r"(?P<mae>[\d.]+)\s+"
-    r"(?P<rmse>[\d.]+)\s+"
-    r"(?P<mape>[\d.]+)\s+"
-    r"(?P<max_err>[\d.]+)\s+"
-    r"(?P<reps>\d+)\s+"
-    r"(?P<mean_ms>[\d.]+)\s+"
-    r"(?P<min_ms>[\d.]+)\s+"
-    r"(?P<ns_pred>[\d.]+)\s*$"
-)
+### One row per scored prediction. ns_per_predict is denormalised (cell-level timing repeated on
+### every row) so the notebook reads a single results.csv with no join.
+RESULT_COLS = ["trace", "predictor", "eval_offset", "horizon", "abs_err", "signed_err", "true_wall", "ns_per_predict"]
 
 
 def sh(cmd: str, *, env: dict | None = None) -> None:
@@ -86,23 +70,22 @@ def parse_trace_rows(output: str) -> list[tuple]:
 
 
 def parse_rows(output: str) -> list[dict]:
+    """Split the `ROW,trace,predictor,eval_offset,horizon,abs_err,signed_err,true_wall,ns` lines.
+    Trace and predictor names contain no commas, so a maxsplit gives exactly the column count."""
     rows = []
     for line in output.splitlines():
-        m = _ROW_RE.match(line)
-        if not m:
+        if not line.startswith("ROW,"):
             continue
+        _, trace, predictor, off, hor, abserr, signerr, truew, nspp = line.split(",", 8)
         rows.append({
-            "trace": m["trace"].strip(),
-            "predictor": m["predictor"],
-            "samples": int(m["samples"]),
-            "mae": float(m["mae"]),
-            "rmse": float(m["rmse"]),
-            "mape_pct": float(m["mape"]),
-            "max_err": float(m["max_err"]),
-            "reps": int(m["reps"]),
-            "mean_ms": float(m["mean_ms"]),
-            "min_ms": float(m["min_ms"]),
-            "ns_per_predict": float(m["ns_pred"]),
+            "trace": trace,
+            "predictor": predictor,
+            "eval_offset": int(off),
+            "horizon": int(hor),
+            "abs_err": float(abserr),
+            "signed_err": float(signerr),
+            "true_wall": float(truew),
+            "ns_per_predict": float(nspp),
         })
     return rows
 
@@ -138,12 +121,13 @@ def main(argv: list[str]) -> int:
     completed = subprocess.run([str(cfg.BENCH_BIN)], check=True, stdout=subprocess.PIPE, text=True)
     (run_dir / "output.txt").write_text(completed.stdout)
 
+    ### Per-run archive + the notebook's read location (results/results.csv).
     rows = parse_rows(completed.stdout)
-    csv_path = run_dir / "results.csv"
-    with csv_path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=RESULT_COLS)
-        w.writeheader()
-        w.writerows(rows)
+    for csv_path in (run_dir / "results.csv", cfg.RESULTS_ROOT / "results.csv"):
+        with csv_path.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=RESULT_COLS)
+            w.writeheader()
+            w.writerows(rows)
 
     ### Scenario shapes -> traces.csv next to results.csv, plus the notebook's read location.
     trace_rows = parse_trace_rows(completed.stdout)
@@ -153,7 +137,7 @@ def main(argv: list[str]) -> int:
             w.writerow(["scenario", "event_time", "wall_clock"])
             w.writerows(trace_rows)
 
-    print(f"[bench] done. {len(rows)} rows, {len(trace_rows)} trace samples → {csv_path}", flush=True)
+    print(f"[bench] done. {len(rows)} rows, {len(trace_rows)} trace samples → {run_dir / 'results.csv'}", flush=True)
     assert rows, "parser produced no rows — table format probably changed; check output.txt"
     return 0
 
@@ -164,24 +148,22 @@ def _demo() -> None:
     assert tr == [("Stall(2.0->0)", 1500, 2000), ("CatchUp(2.0->8.0)", 3000, 2500)], tr
 
     sample = (
-        "Trace                                          Predictor              Samples           MAE          RMSE     MAPE(%)        MaxErr    Reps        MeanMs         MinMs       ns/pred\n"
-        + "-" * 180 + "\n"
-        "ConstantRate(2.0) clean                       EWMA(alpha=0.3)              100         12.34         15.67        3.45         42.10       5        998.20        995.10          9.98\n"
-        "ConstantRate(2.0) clean                       Kalman(default)              100          8.20         11.05        2.10         30.00       5       1203.40       1198.70         12.03\n"
-        "ConstantRate(2.0) clean                       RobustAdaptiveKalman         100          7.10          9.90        1.80         25.00       5       1300.00       1295.00         13.00\n"
-        "\n"
+        "ROW,ConstantRate(2.0) clean,EWMA(alpha=0.3),0,500,12.340,12.340,1100.000,9.980\n"
+        "ROW,ConstantRate(2.0) clean,RobustAdaptiveKalman,3,5000,-7.100,-7.100,21000.000,13.000\n"
+        "TRACE,ConstantRate(2.0),1000,1000\n"  # interleaved trace line must be ignored here
     )
     rows = parse_rows(sample)
-    assert len(rows) == 3, rows
+    assert len(rows) == 2, rows
     assert rows[0]["trace"] == "ConstantRate(2.0) clean"
     assert rows[0]["predictor"] == "EWMA(alpha=0.3)"
-    assert rows[0]["samples"] == 100
-    assert rows[1]["predictor"] == "Kalman(default)"
-    assert rows[1]["mae"] == 8.20
-    assert rows[2]["predictor"] == "RobustAdaptiveKalman"
-    assert rows[0]["reps"] == 5
+    assert rows[0]["eval_offset"] == 0
+    assert rows[0]["horizon"] == 500
+    assert rows[0]["abs_err"] == 12.34
     assert rows[0]["ns_per_predict"] == 9.98
-    assert rows[1]["min_ms"] == 1198.70
+    assert rows[1]["predictor"] == "RobustAdaptiveKalman"
+    assert rows[1]["horizon"] == 5000
+    assert rows[1]["signed_err"] == -7.10
+    assert rows[1]["true_wall"] == 21000.0
     print("demo ok")
 
 

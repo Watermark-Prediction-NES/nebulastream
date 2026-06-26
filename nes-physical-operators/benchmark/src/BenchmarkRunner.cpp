@@ -27,70 +27,55 @@
 namespace NES
 {
 
-PredictionMetrics runBenchmark(
+std::vector<PredictionSample> runBenchmark(
     WatermarkPredictor& predictor,
     const WatermarkTrace& observed,
     const WatermarkTrace& truth,
-    size_t observePrefix,
+    size_t warmup,
     const std::vector<uint64_t>& horizons)
 {
-    PredictionMetrics m;
-    if (observePrefix == 0 || observePrefix > observed.size())
+    std::vector<PredictionSample> samples;
+    if (warmup == 0 || warmup > observed.size())
     {
-        return m;
+        return samples;
     }
-    for (size_t i = 0; i < observePrefix; ++i)
+
+    /// Batch warm-up: observe the prefix without scoring so the predictor reaches steady state.
+    for (size_t i = 0; i < warmup; ++i)
     {
         predictor.observe(observed[i].watermarkTs, observed[i].wallClock);
     }
-    const auto lastSeenWatermark = observed[observePrefix - 1].watermarkTs;
 
-    double sumAbs = 0.0;
-    double sumSq = 0.0;
-    double sumPct = 0.0;
-    double maxErr = 0.0;
-    size_t n = 0;
-    size_t pctSamples = 0;
-    for (const auto h : horizons)
+    /// Prequential phase: observe one sample, then query every horizon. A horizon whose crossing
+    /// falls past the end of the truth trace yields no ground truth and is skipped (so eval ticks
+    /// near the end naturally contribute fewer horizons).
+    for (size_t i = warmup; i < observed.size(); ++i)
     {
-        const Timestamp target{lastSeenWatermark.getRawValue() + h};
-        const auto trueT = trueWallClockForTarget(truth, target);
-        if (!trueT)
+        predictor.observe(observed[i].watermarkTs, observed[i].wallClock);
+        const auto lastSeenWatermark = observed[i].watermarkTs;
+        for (const auto h : horizons)
         {
-            continue;
+            const Timestamp target{lastSeenWatermark.getRawValue() + h};
+            const auto trueT = trueWallClockForTarget(truth, target);
+            if (!trueT)
+            {
+                continue;
+            }
+            const auto predicted = predictor.predictWallClock(target);
+            if (predicted.getRawValue() == Timestamp::INVALID_VALUE)
+            {
+                continue;
+            }
+            const double signedErr = static_cast<double>(predicted.getRawValue()) - static_cast<double>(trueT->getRawValue());
+            samples.push_back(PredictionSample{
+                .evalOffset = i - warmup,
+                .horizon = h,
+                .absErr = std::abs(signedErr),
+                .signedErr = signedErr,
+                .trueWall = static_cast<double>(trueT->getRawValue())});
         }
-        const auto predicted = predictor.predictWallClock(target);
-        if (predicted.getRawValue() == Timestamp::INVALID_VALUE)
-        {
-            continue;
-        }
-        const double err = static_cast<double>(predicted.getRawValue()) - static_cast<double>(trueT->getRawValue());
-        const double absErr = std::abs(err);
-        sumAbs += absErr;
-        sumSq += err * err;
-        if (absErr > maxErr)
-        {
-            maxErr = absErr;
-        }
-        /// MAPE is undefined when true == 0; skip those rather than blow up the average.
-        const auto trueAbs = std::abs(static_cast<double>(trueT->getRawValue()));
-        if (trueAbs > 0.0)
-        {
-            sumPct += (absErr / trueAbs) * 100.0;
-            ++pctSamples;
-        }
-        ++n;
     }
-    if (n == 0)
-    {
-        return m;
-    }
-    m.mae = sumAbs / static_cast<double>(n);
-    m.rmse = std::sqrt(sumSq / static_cast<double>(n));
-    m.mape = pctSamples == 0 ? 0.0 : sumPct / static_cast<double>(pctSamples);
-    m.maxError = maxErr;
-    m.samples = n;
-    return m;
+    return samples;
 }
 
 }

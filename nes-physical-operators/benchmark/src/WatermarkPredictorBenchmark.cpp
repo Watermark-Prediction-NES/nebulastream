@@ -72,7 +72,7 @@ struct TimingStats
 TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
 {
     TimingStats stats{.reps = Repetitions, .meanMs = 0.0, .minMs = 0.0, .nsPerPredict = 0.0};
-    if (exp.observePrefix == 0 || exp.observePrefix > exp.observed.size())
+    if (exp.warmup == 0 || exp.warmup > exp.observed.size())
     {
         return stats;
     }
@@ -83,11 +83,11 @@ TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
     for (std::size_t rep = 0; rep < Repetitions; ++rep)
     {
         auto predictor = entry.make();
-        for (std::size_t i = 0; i < exp.observePrefix; ++i)
+        for (std::size_t i = 0; i < exp.warmup; ++i)
         {
             predictor->observe(exp.observed[i].watermarkTs, exp.observed[i].wallClock);
         }
-        const std::uint64_t base = exp.observed[exp.observePrefix - 1].watermarkTs.getRawValue() + 1;
+        const std::uint64_t base = exp.observed[exp.warmup - 1].watermarkTs.getRawValue() + 1;
 
         const auto start = std::chrono::steady_clock::now();
         for (std::size_t i = 0; i < PredictQueriesPerRep; ++i)
@@ -114,14 +114,14 @@ TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
 }
 
 /// The distinct clean scenario shapes. Defined once so buildExperiments() and printTraces() agree.
+/// Each is long enough past the warm-up boundary that the largest horizon still resolves against the
+/// truth trace for most eval ticks.
 struct BaseTraces
 {
-    PiecewiseConstantTraceSource constantFast{{{200, 100, 50}}};
-    PiecewiseConstantTraceSource rateChange{{{100, 50, 50}, {300, 200, 50}}};
+    PiecewiseConstantTraceSource constantFast{{{300, 100, 50}}};
 
     /// Stall: rate 2.0, then the watermark holds flat (eventStep 0) while wall-clock keeps advancing,
-    /// then resumes at 2.0. observePrefix lands inside the stall so the predictor must extrapolate
-    /// across a stalled watermark.
+    /// then resumes at 2.0. Warm-up ends at the stall onset so the rolling eval spans the whole stall.
     PiecewiseConstantTraceSource stall{{{100, 100, 50}, {100, 0, 50}, {100, 100, 50}}};
 
     /// Catch-up: rate 2.0, a shorter stall, then a fast burst (rate 8.0) that races to catch up the
@@ -133,40 +133,31 @@ std::vector<Experiment> buildExperiments()
 {
     const BaseTraces base;
     const auto& constantFast = base.constantFast;
-    const auto& rateChange = base.rateChange;
     const auto& stall = base.stall;
     const auto& catchUp = base.catchUp;
 
+    /// Rolling eval scores after every post-warm-up sample, so a single experiment per scenario now
+    /// yields the whole error-vs-time curve (no more +N prefix sweeps). Near / mid / far horizons keep
+    /// look-ahead sensitivity as its own axis. Warm-up ends at the regime onset for the event traces.
+    const std::vector<uint64_t> horizons{500, 2000, 5000};
+
     std::vector<Experiment> experiments;
 
-    /// Clean baseline.
-    experiments.push_back(makeCleanExperiment("ConstantRate(2.0) clean", constantFast, 100, {500, 1000, 2000, 5000}));
+    /// Clean baselines.
+    experiments.push_back(makeCleanExperiment("ConstantRate(2.0) clean", constantFast, 100, horizons));
+    experiments.push_back(makeCleanExperiment("Stall(2.0->0) clean", stall, 100, horizons));
+    experiments.push_back(makeCleanExperiment("CatchUp(2.0->8.0) clean", catchUp, 100, horizons));
 
-    /// Adaptation-lag sweep on the rate-change trace.
-    for (const auto samplesAfter : {2, 5, 10, 20, 50, 100})
-    {
-        experiments.push_back(makeCleanExperiment(
-            "RateChange(1->4) +" + std::to_string(samplesAfter) + " samples clean",
-            rateChange,
-            100 + static_cast<size_t>(samplesAfter),
-            {500, 1000, 2000}));
-    }
-
-    /// Mild Gaussian jitter, no extra-late spikes.
+    /// Gaussian jitter, no extra-late spikes.
     const GaussianNoiseModel mildJitter{{.wallClockStddev = 10.0, .seed = 1}};
-    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) mild jitter (sd=10)", constantFast, mildJitter, 100, {500, 1000, 2000}));
-    experiments.push_back(makeNoisyExperiment("RateChange(1->4) +10 + mild jitter", rateChange, mildJitter, 110, {500, 1000, 2000}));
-
-    /// Heavier Gaussian jitter.
+    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) mild jitter (sd=10)", constantFast, mildJitter, 100, horizons));
     const GaussianNoiseModel heavyJitter{{.wallClockStddev = 30.0, .seed = 2}};
-    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) heavy jitter (sd=30)", constantFast, heavyJitter, 100, {500, 1000, 2000}));
-    experiments.push_back(makeNoisyExperiment("RateChange(1->4) +20 + heavy jitter", rateChange, heavyJitter, 120, {500, 1000, 2000}));
+    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) heavy jitter (sd=30)", constantFast, heavyJitter, 100, horizons));
 
     /// Stragglers: spike distribution fixed (mean=400, sd=100); sweep over late-fraction.
     const GaussianNoiseModel stragglersMild{
         {.wallClockStddev = 5.0, .lateProbability = 0.10, .lateExtraDelayMean = 200.0, .lateExtraDelayStddev = 50.0, .seed = 3}};
-    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) + 10% stragglers", constantFast, stragglersMild, 100, {500, 1000, 2000}));
-    experiments.push_back(makeNoisyExperiment("RateChange(1->4) +20 + 10% stragglers", rateChange, stragglersMild, 120, {500, 1000, 2000}));
+    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) + 10% stragglers", constantFast, stragglersMild, 100, horizons));
 
     for (const auto [lateProb, seed] : std::vector<std::pair<double, uint64_t>>{{0.30, 4}, {0.50, 5}, {0.70, 6}, {0.90, 7}})
     {
@@ -178,27 +169,7 @@ std::vector<Experiment> buildExperiments()
              .seed = seed}};
         const auto pctLabel = std::to_string(static_cast<int>(lateProb * 100.0));
         experiments.push_back(
-            makeNoisyExperiment("ConstantRate(2.0) + " + pctLabel + "% heavy stragglers", constantFast, sweep, 100, {500, 1000, 2000}));
-    }
-
-    /// Stall: predict at several points into the flat region (watermark not advancing).
-    for (const auto samplesIntoStall : {2, 5, 10, 25, 50})
-    {
-        experiments.push_back(makeCleanExperiment(
-            "Stall(2.0->0) +" + std::to_string(samplesIntoStall) + " samples clean",
-            stall,
-            100 + static_cast<size_t>(samplesIntoStall),
-            {500, 1000, 2000}));
-    }
-
-    /// Catch-up: predict just before, during, and after the fast burst that drains the backlog.
-    for (const auto samplesIntoBurst : {2, 5, 10, 25, 50})
-    {
-        experiments.push_back(makeCleanExperiment(
-            "CatchUp(2.0->8.0) +" + std::to_string(samplesIntoBurst) + " samples clean",
-            catchUp,
-            150 + static_cast<size_t>(samplesIntoBurst),
-            {500, 1000, 2000}));
+            makeNoisyExperiment("ConstantRate(2.0) + " + pctLabel + "% heavy stragglers", constantFast, sweep, 100, horizons));
     }
 
     return experiments;
@@ -236,25 +207,21 @@ void printTraces()
         }
     };
     dump("ConstantRate(2.0)", base.constantFast);
-    dump("RateChange(1->4)", base.rateChange);
     dump("Stall(2.0->0)", base.stall);
     dump("CatchUp(2.0->8.0)", base.catchUp);
 }
 
-void printHeader()
+/// One CSV row per scored prediction. ns/predict is denormalised onto every row (cell-level timing)
+/// so the notebook needs a single results.csv with no join. benchmark.py routes ROW lines into it.
+/// Trace and predictor names contain no commas, so a plain split parses cleanly downstream.
+void printRows(const std::string& traceName, const std::string& predictorName, const std::vector<PredictionSample>& samples,
+    const TimingStats& timing)
 {
-    std::cout << std::left << std::setw(46) << "Trace" << std::setw(20) << "Predictor" << std::right << std::setw(10) << "Samples"
-              << std::setw(14) << "MAE" << std::setw(14) << "RMSE" << std::setw(12) << "MAPE(%)" << std::setw(14) << "MaxErr"
-              << std::setw(8) << "Reps" << std::setw(14) << "MeanMs" << std::setw(14) << "MinMs" << std::setw(14) << "ns/pred" << '\n';
-    std::cout << std::string(180, '-') << '\n';
-}
-
-void printRow(const std::string& traceName, const std::string& predictorName, const PredictionMetrics& m, const TimingStats& t)
-{
-    std::cout << std::left << std::setw(46) << traceName << std::setw(20) << predictorName << std::right << std::setw(10) << m.samples
-              << std::fixed << std::setprecision(2) << std::setw(14) << m.mae << std::setw(14) << m.rmse << std::setw(12) << m.mape
-              << std::setw(14) << m.maxError << std::setw(8) << t.reps << std::setw(14) << t.meanMs << std::setw(14) << t.minMs
-              << std::setw(14) << t.nsPerPredict << '\n';
+    for (const auto& s : samples)
+    {
+        std::cout << "ROW," << traceName << "," << predictorName << "," << s.evalOffset << "," << s.horizon << "," << s.absErr << ","
+                  << s.signedErr << "," << s.trueWall << "," << timing.nsPerPredict << '\n';
+    }
 }
 
 /// Compact "Xm YYs" / "Ys" duration for the progress line.
@@ -281,12 +248,16 @@ int run()
     const auto predictors = buildPredictors();
     const std::size_t totalCells = experiments.size() * predictors.size();
 
-    /// Progress goes to stderr so it stays out of the stdout table the Python wrapper parses.
+    /// Progress goes to stderr so it stays out of the stdout CSV stream the Python wrapper parses.
     std::cerr << "[bench] " << totalCells << " cells (" << experiments.size() << " traces x " << predictors.size() << " predictors), "
               << Repetitions << " timed reps each\n";
 
+    /// Fixed precision keeps wall-clock magnitudes and small errors both legible in the CSV; the
+    /// integer columns (eval_offset, horizon) are unaffected. sync_with_stdio off for bulk row output.
+    std::ios::sync_with_stdio(false);
+    std::cout << std::fixed << std::setprecision(3);
+
     printTraces();
-    printHeader();
     const auto runStart = std::chrono::steady_clock::now();
     std::size_t cell = 0;
     for (const auto& exp : experiments)
@@ -295,9 +266,9 @@ int run()
         {
             const auto cellStart = std::chrono::steady_clock::now();
             auto p = predictor.make();
-            const auto metrics = runBenchmark(*p, exp.observed, exp.truth, exp.observePrefix, exp.horizons);
+            const auto samples = runBenchmark(*p, exp.observed, exp.truth, exp.warmup, exp.horizons);
             const auto timing = timePredictor(predictor, exp);
-            printRow(exp.name, predictor.name, metrics, timing);
+            printRows(exp.name, predictor.name, samples, timing);
             ++cell;
 
             const auto now = std::chrono::steady_clock::now();
@@ -312,7 +283,6 @@ int run()
                  << " (" << std::setprecision(1) << cellS << "s)";
             std::cerr << line.str() << std::endl;
         }
-        std::cout << '\n';
     }
     return 0;
 }
