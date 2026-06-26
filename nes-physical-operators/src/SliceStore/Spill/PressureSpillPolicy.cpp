@@ -25,6 +25,7 @@
 #include <Util/Logger/Logger.hpp>
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
+#include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <SpillPolicyRegistry.hpp>
 
 namespace NES
@@ -39,6 +40,10 @@ std::unique_ptr<WatermarkPredictor> makePredictor(std::string_view name)
     if (upper == "KALMAN")
     {
         return std::make_unique<KalmanWatermarkPredictor>();
+    }
+    if (upper == "ROBUSTKALMAN")
+    {
+        return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>();
     }
     if (upper == "EWMA" || upper.empty())
     {

@@ -31,8 +31,8 @@ namespace NES
 /// pay restore latency on an imminent trigger. With no predictor (or a cold one returning
 /// INVALID_VALUE) the policy is pure-pressure — i.e. the old "reactive" behaviour.
 ///
-/// Predictor selection (`predictorName`): "ewma" or "kalman"; unknown values fall back to "ewma"
-/// and log a `NES_WARN`.
+/// Predictor selection (`predictorName`): "ewma", "kalman", or "robustkalman"; unknown values fall
+/// back to "ewma" and log a `NES_WARN`.
 class PressureSpillPolicy final : public SpillPolicy
 {
 public:

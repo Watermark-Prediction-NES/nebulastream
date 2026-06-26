@@ -20,6 +20,7 @@
 #include <Util/Logger/impl/NesLogger.hpp>
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
+#include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 #include <gtest/gtest.h>
 #include <BaseUnitTest.hpp>
@@ -39,6 +40,10 @@ public:
         if (GetParam() == "ewma")
         {
             return std::make_unique<EwmaWatermarkPredictor>(0.3);
+        }
+        if (GetParam() == "robust")
+        {
+            return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>();
         }
         return std::make_unique<KalmanWatermarkPredictor>();
     }
@@ -116,6 +121,9 @@ TEST_P(WatermarkPredictorBehaviourTest, PredictionForLastWatermarkEqualsLastWall
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Predictors, WatermarkPredictorBehaviourTest, ::testing::Values("ewma", "kalman"), [](const auto& info) { return info.param; });
+    Predictors,
+    WatermarkPredictorBehaviourTest,
+    ::testing::Values("ewma", "kalman", "robust"),
+    [](const auto& info) { return info.param; });
 
 }
