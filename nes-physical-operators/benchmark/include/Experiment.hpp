@@ -44,7 +44,7 @@ struct Experiment
 
 /// Builds an Experiment by applying a noise model to the trace produced by the source.
 /// The clean trace from the source is retained as truth; the noisy trace is what the predictor sees.
-[[nodiscard]] Experiment makeNoisyExperiment(
-    std::string name, const TraceSource& source, const NoiseModel& noise, size_t warmup, std::vector<uint64_t> horizons);
+[[nodiscard]] Experiment
+makeNoisyExperiment(std::string name, const TraceSource& source, const NoiseModel& noise, size_t warmup, std::vector<uint64_t> horizons);
 
 }

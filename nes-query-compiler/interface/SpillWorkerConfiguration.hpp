@@ -48,8 +48,7 @@ public:
     FloatOption highMemoryBound = {"high_memory_bound", "0.85", "Spill above this memory-pressure ratio. 0.0 = always spill."};
     UIntOption predictionHorizonMs
         = {"prediction_horizon_ms", "50", "Predictive policy: ms ahead the predictor must say a slice triggers to keep it resident."};
-    StringOption predictorName
-        = {"predictor", "ewma", "Watermark predictor for the predictive policy (ewma, kalman, robustkalman)."};
+    StringOption predictorName = {"predictor", "ewma", "Watermark predictor for the predictive policy (ewma, kalman, robustkalman)."};
 
     /// Materialise the POD consumed by the lowering rules / SliceStoreFactory.
     [[nodiscard]] SpillConfiguration toSpillConfiguration() const

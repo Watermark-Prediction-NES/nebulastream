@@ -14,52 +14,24 @@
 
 #include <SliceStore/Spill/PressureSpillPolicy.hpp>
 
-#include <algorithm>
-#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <SliceStore/Spill/SpillPolicy.hpp>
 #include <Time/Timestamp.hpp>
-#include <Util/Logger/Logger.hpp>
-#include <Watermark/EwmaWatermarkPredictor.hpp>
-#include <Watermark/KalmanWatermarkPredictor.hpp>
-#include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
+#include <Watermark/WatermarkPredictorFactory.hpp>
 #include <SpillPolicyRegistry.hpp>
 
 namespace NES
 {
-
-namespace
-{
-std::unique_ptr<WatermarkPredictor> makePredictor(std::string_view name)
-{
-    std::string upper{name};
-    std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    if (upper == "KALMAN")
-    {
-        return std::make_unique<KalmanWatermarkPredictor>();
-    }
-    if (upper == "ROBUSTKALMAN")
-    {
-        return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>();
-    }
-    if (upper == "EWMA" || upper.empty())
-    {
-        return std::make_unique<EwmaWatermarkPredictor>(0.3);
-    }
-    NES_WARNING("PressureSpillPolicy: unknown predictor '{}', falling back to EWMA", name);
-    return std::make_unique<EwmaWatermarkPredictor>(0.3);
-}
-}
 
 PressureSpillPolicy::PressureSpillPolicy(double highBound_) noexcept : highBound(highBound_)
 {
 }
 
 PressureSpillPolicy::PressureSpillPolicy(double highBound_, std::chrono::milliseconds horizon_, std::string_view predictorName) noexcept
-    : highBound(highBound_), horizon(horizon_), predictor(makePredictor(predictorName))
+    : highBound(highBound_), horizon(horizon_), predictor(makeWatermarkPredictor(predictorName))
 {
 }
 

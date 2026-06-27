@@ -15,6 +15,7 @@
 #include <SliceStore/DefaultTimeBasedSliceStore.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -37,6 +38,8 @@
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Time/Timestamp.hpp>
 #include <Util/Logger/Logger.hpp>
+#include <Watermark/WatermarkPredictor.hpp>
+#include <Watermark/WatermarkPredictorFactory.hpp>
 #include <folly/Synchronized.h>
 #include <ErrorHandling.hpp>
 #include <SliceCacheConfiguration.hpp>
@@ -55,6 +58,49 @@ DefaultTimeBasedSliceStore::DefaultTimeBasedSliceStore(
     , sequenceNumber(SequenceNumber::INITIAL)
     , numberOfActiveInputPipelines(0)
 {
+    *preemptivePredictor.wlock() = makeWatermarkPredictor(this->slicePreallocationConfiguration.preemptivePredictor.getValue());
+    wallClockNow = []
+    {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        return Timestamp{static_cast<Timestamp::Underlying>(ms)};
+    };
+}
+
+void DefaultTimeBasedSliceStore::setWallClockSourceForTesting(std::function<Timestamp()> clock)
+{
+    wallClockNow = std::move(clock);
+}
+
+uint64_t DefaultTimeBasedSliceStore::preemptiveSliceCount(const SliceEnd sliceEnd, const uint64_t slide, const uint64_t horizonMs) const
+{
+    const auto staticCount = horizonMs / slide;
+    auto predictor = preemptivePredictor.rlock();
+    if (*predictor == nullptr)
+    {
+        /// No predictor: static event-time lookahead (legacy behaviour).
+        return staticCount;
+    }
+
+    const auto deadline = wallClockNow().getRawValue() + horizonMs;
+    const auto cap = slicePreallocationConfiguration.preemptiveMaxSlices.getValue();
+    uint64_t count = 0;
+    while (count < cap)
+    {
+        const auto futureTs = Timestamp{sliceEnd.getRawValue() + (count * slide)};
+        const auto end = sliceAssigner.getSliceEndTs(futureTs);
+        const auto arrival = (*predictor)->predictWallClock(Timestamp{end.getRawValue()});
+        if (arrival.getRawValue() == Timestamp::INVALID_VALUE)
+        {
+            /// Predictor too cold to answer yet: fall back to the static lookahead.
+            return count == 0 ? staticCount : count;
+        }
+        if (arrival.getRawValue() > deadline)
+        {
+            break;
+        }
+        ++count;
+    }
+    return count;
 }
 
 std::shared_ptr<Slice> DefaultTimeBasedSliceStore::obtainSlice(
@@ -149,13 +195,15 @@ std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreat
     slicesWriteLocked->emplace(sliceEnd, newSlice);
     registerSliceWithWindows(newSlice);
 
-    /// Preemptive create: while we already hold both locks, also create the slices covering the
-    /// next horizonMs of event time. Future build tuples land on a warm slice instead of racing.
+    /// Preemptive create: while we already hold both locks, also create the upcoming slices the stream
+    /// is about to need so future build tuples land on a warm slice instead of racing. The number of
+    /// slices is either the static event-time lookahead (no predictor) or predicted from the wall-clock
+    /// horizon (with a predictor) — see preemptiveSliceCount.
     const auto horizonMs = slicePreallocationConfiguration.preemptiveCreateHorizonMs.getValue();
     const auto slide = sliceAssigner.getWindowSlide();
     if (horizonMs > 0 and slide > 0)
     {
-        for (const auto i : std::views::iota(uint64_t{0}, horizonMs / slide))
+        for (const auto i : std::views::iota(uint64_t{0}, preemptiveSliceCount(sliceEnd, slide, horizonMs)))
         {
             /// sliceEnd is exactly the start of the next slice, so i=0 hits [sliceEnd, sliceEnd+slide).
             const auto futureTs = Timestamp{sliceEnd.getRawValue() + i * slide};
@@ -283,6 +331,18 @@ std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> Defau
 
 void DefaultTimeBasedSliceStore::garbageCollectSlicesAndWindows(const Timestamp newGlobalWaterMark)
 {
+    /// GC ticks are our periodic sampling point for the watermark's wall-clock progress: feed the
+    /// predictor (event-time = global watermark, wall-clock = now) so the create path can forecast
+    /// how far ahead to preallocate. No-op when preemptive_predictor == "off".
+    preemptivePredictor.withWLock(
+        [&](auto& predictor)
+        {
+            if (predictor != nullptr)
+            {
+                predictor->observe(newGlobalWaterMark, wallClockNow());
+            }
+        });
+
     std::vector<std::shared_ptr<Slice>> slicesToDelete;
     {
         NES_TRACE("Performing garbage collection for new global watermark {}", newGlobalWaterMark);

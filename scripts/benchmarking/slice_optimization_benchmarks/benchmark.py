@@ -16,11 +16,17 @@
 benchmark queries.
 
 Sweep: cartesian product of
-(query × preemptive_create_horizon_ms × recycle_pool_size × threads × predictor).
+(query × preemptive_create_horizon_ms × preemptive_predictor × recycle_pool_size × threads × predictor).
 Each cell runs `systest -b` once and appends one row to results/<run-id>/results.csv.
 
-Knobs (both sentinel-disabled, 0 = off; see SlicePreallocationConfiguration.hpp):
-  preemptive_create_horizon_ms  build-side lookahead, creates upcoming slices in one critical section
+Knobs (sentinel-disabled, 0 / "off"; see SlicePreallocationConfiguration.hpp):
+  preemptive_create_horizon_ms  build-side lookahead. With preemptive_predictor=off these are event-time
+                                ms (static horizon/slide); with a predictor they are WALL-CLOCK ms,
+                                converted to a slice count by the predictor (capped by preemptive_max_slices)
+  preemptive_predictor          watermark predictor driving the wall-clock horizon (off/ewma/kalman/
+                                robustkalman). off = static event-time lookahead. Independent of the
+                                spill `predictor` below
+  preemptive_max_slices         hard cap on slices created per preemptive burst (only with a predictor)
   recycle_pool_size             LIFO of slices retired by probe-side GC, reused by build-side
   predictor                     watermark predictor for the predictive spill policy; "off" = no spill
                                 wrapper (plain slice store), otherwise ewma/kalman/robustkalman
@@ -60,16 +66,16 @@ RESULTS_ROOT = BENCH_DIR / "results"
 ### Subset of nes-systests/benchmark/memory-source/, chosen for nontrivial windowing
 ### (every entry has at least one tumbling/sliding aggregation that exercises the slice store).
 QUERIES = {
-    "CM1": "nes-systests/benchmark/memory-source/ClusterMonitoring_memory.test:01",
-    "CM2": "nes-systests/benchmark/memory-source/ClusterMonitoring_memory.test:02",
-    "LRB1": "nes-systests/benchmark/memory-source/LinearRoadBenchmark_memory.test:01",
-    "LRB2": "nes-systests/benchmark/memory-source/LinearRoadBenchmark_memory.test:02",
-    "MA": "nes-systests/benchmark/memory-source/Manufacturing_memory.test:01",
-    "YSB1": "nes-systests/benchmark/memory-source/YahooStreamingBenchmark_with_varsized_memory.test:01",
-    "YSB2": "nes-systests/benchmark/memory-source/YahooStreamingBenchmark_with_varsized_memory.test:02",
-    "NM5": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:04",
-    "NM8": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:05",
-    "NM8_Variant": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:06",
+    # "CM1": "nes-systests/benchmark/memory-source/ClusterMonitoring_memory.test:01",
+    # "CM2": "nes-systests/benchmark/memory-source/ClusterMonitoring_memory.test:02",
+    # "LRB1": "nes-systests/benchmark/memory-source/LinearRoadBenchmark_memory.test:01",
+    # "LRB2": "nes-systests/benchmark/memory-source/LinearRoadBenchmark_memory.test:02",
+    # "MA": "nes-systests/benchmark/memory-source/Manufacturing_memory.test:01",
+    # "YSB1": "nes-systests/benchmark/memory-source/YahooStreamingBenchmark_with_varsized_memory.test:01",
+    # "YSB2": "nes-systests/benchmark/memory-source/YahooStreamingBenchmark_with_varsized_memory.test:02",
+    # "NM5": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:04",
+    # "NM8": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:05",
+    # "NM8_Variant": "nes-systests/benchmark/memory-source/Nexmark_with_varsized_memory.test:06",
     ### Slice-store stress: 1 second slide keeps thousands of slices concurrently active
     ### (~23000 for the 1-DAY aggregation, ~3600 for the 1-HOUR join over bid_6GB.csv's ~6.4h span).
     "SLICE_AGG": "nes-systests/benchmark/memory-source/SliceOptimization_memory.test:01",
@@ -78,9 +84,18 @@ QUERIES = {
 
 ### 0 = off. Same value used for both knobs so the matrix stays a clean 2x2 by default
 ### (off/off baseline, preemptive-only, recycle-only, both-on).
-PREEMPTIVE_HORIZON_MS = [0, 10]
-RECYCLE_POOL_SIZE = [0, 32]
+PREEMPTIVE_HORIZON_MS = [0, 1000]
+RECYCLE_POOL_SIZE = [0, 4096]
 WORKER_THREADS = [1, 16]
+
+### Predictor driving the (wall-clock) preemptive-create horizon. "off" = static event-time lookahead
+### (legacy). "ewma"/etc = predict how many upcoming slices the stream reaches within the horizon.
+### Independent of the spill PREDICTORS below; off+off..on gives the with/without-prediction comparison.
+PREEMPTIVE_PREDICTORS = ["off", "ewma"]
+
+### Hard cap on slices created per preemptive burst when a predictor is active. Matches the engine
+### default; raise it if a fast memory source warms more slices than this in one horizon window.
+PREEMPTIVE_MAX_SLICES = 256
 
 ### "off" = no SET clause (plain slice store, no spill wrapper); the rest enable the predictive spill
 ### policy with the named watermark predictor. Recognised predictors: ewma, kalman, robustkalman.
@@ -121,7 +136,8 @@ CMAKE_FLAGS = {
 CMAKE_TARGETS = ["systest"]
 
 RESULT_COLS = [
-    "run_id", "query", "preemptive_horizon_ms", "recycle_pool_size", "threads", "predictor",
+    "run_id", "query", "preemptive_horizon_ms", "preemptive_predictor", "preemptive_max_slices",
+    "recycle_pool_size", "threads", "predictor",
     "runs", "time_s", "tuples_per_second", "bytes_per_second", "failure_reason",
 ]
 
@@ -162,7 +178,8 @@ def cmake_configure_and_build() -> None:
     sh(f"/usr/bin/cmake --build {BUILD_DIR} --target {' '.join(CMAKE_TARGETS)} -- -j {jobs}", env=env)
 
 
-def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int, predictor: str,
+def run_cell(qname: str, query_test: str, horizon: int, preemptive_predictor: str, max_slices: int,
+             pool: int, threads: int, predictor: str,
              runs: int, high_bound: float | None, cell_dir: Path) -> dict:
     cell_dir.mkdir(parents=True, exist_ok=True)
     buf_size, num_buffers = BUFFER_OVERRIDES.get(qname, (BUFFER_SIZE_BYTES, BUFFERS_IN_GLOBAL_POOL))
@@ -173,6 +190,8 @@ def run_cell(qname: str, query_test: str, horizon: int, pool: int, threads: int,
         f"--worker.default_query_execution.operator_buffer_size={buf_size}",
         f"--worker.default_query_execution.page_size={PAGE_SIZE}",
         f"--worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms={horizon}",
+        f"--worker.default_query_execution.slice_preallocation.preemptive_predictor={preemptive_predictor}",
+        f"--worker.default_query_execution.slice_preallocation.preemptive_max_slices={max_slices}",
         f"--worker.default_query_execution.slice_preallocation.recycle_pool_size={pool}",
     ])
     ### query_test is "<rel-path>:<idx>"; patch the SET clause onto a copy in the cell dir and
@@ -243,6 +262,9 @@ def parse_argv(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--clean-build", action="store_true", help=f"rm -rf {BUILD_DIR} before configuring")
     p.add_argument("-q", "--queries", nargs="+", help=f"subset of {sorted(QUERIES)}")
     p.add_argument("--horizon", nargs="+", type=int, help=f"override PREEMPTIVE_HORIZON_MS (default {PREEMPTIVE_HORIZON_MS})")
+    p.add_argument("--preemptive-predictor", nargs="+",
+                   help=f"override PREEMPTIVE_PREDICTORS (default {PREEMPTIVE_PREDICTORS})")
+    p.add_argument("--max-slices", type=int, help=f"preemptive_max_slices (default {PREEMPTIVE_MAX_SLICES})")
     p.add_argument("--pool", nargs="+", type=int, help=f"override RECYCLE_POOL_SIZE (default {RECYCLE_POOL_SIZE})")
     p.add_argument("--threads", nargs="+", type=int, help=f"override WORKER_THREADS (default {WORKER_THREADS})")
     p.add_argument("--predictor", nargs="+", help=f"override PREDICTORS (default {PREDICTORS})")
@@ -270,6 +292,8 @@ def main(argv: list[str]) -> int:
         print(f"[bench] no matching queries in {args.queries}", file=sys.stderr)
         return 2
     horizons = args.horizon or PREEMPTIVE_HORIZON_MS
+    preemptive_predictors = args.preemptive_predictor or PREEMPTIVE_PREDICTORS
+    max_slices = args.max_slices if args.max_slices is not None else PREEMPTIVE_MAX_SLICES
     pools = args.pool or RECYCLE_POOL_SIZE
     threads_list = args.threads or WORKER_THREADS
     predictors = args.predictor or PREDICTORS
@@ -280,7 +304,7 @@ def main(argv: list[str]) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     csv_path = run_dir / "results.csv"
 
-    cells = list(itertools.product(queries.items(), horizons, pools, threads_list, predictors))
+    cells = list(itertools.product(queries.items(), horizons, preemptive_predictors, pools, threads_list, predictors))
     print(f"[bench] {len(cells)} cells → {csv_path}", flush=True)
 
     with csv_path.open("w", newline="") as f:
@@ -290,8 +314,8 @@ def main(argv: list[str]) -> int:
 
         tty = sys.stdout.isatty()
         start_t = time.monotonic()
-        for i, ((qname, qpath), horizon, pool, threads, predictor) in enumerate(cells, start=1):
-            slug = f"{qname}_h{horizon}_p{pool}_t{threads}_{predictor}"
+        for i, ((qname, qpath), horizon, preemptive_predictor, pool, threads, predictor) in enumerate(cells, start=1):
+            slug = f"{qname}_h{horizon}_pp{preemptive_predictor}_p{pool}_t{threads}_{predictor}"
             cell_dir = run_dir / slug
             prefix = f"[bench] cell {i}/{len(cells)}: {slug}"
             ### On a TTY, show a live "running" line; \r overwrites it in place with the result so each
@@ -300,11 +324,13 @@ def main(argv: list[str]) -> int:
                 print(f"{prefix} ...", end="", flush=True)
             base = {
                 "run_id": run_id, "query": qname,
-                "preemptive_horizon_ms": horizon, "recycle_pool_size": pool, "threads": threads,
+                "preemptive_horizon_ms": horizon, "preemptive_predictor": preemptive_predictor,
+                "preemptive_max_slices": max_slices, "recycle_pool_size": pool, "threads": threads,
                 "predictor": predictor,
                 "runs": "", "time_s": "", "tuples_per_second": "", "bytes_per_second": "", "failure_reason": "",
             }
-            base.update(run_cell(qname, qpath, horizon, pool, threads, predictor, runs, args.high_bound, cell_dir))
+            base.update(run_cell(qname, qpath, horizon, preemptive_predictor, max_slices, pool, threads, predictor,
+                                 runs, args.high_bound, cell_dir))
             writer.writerow(base)
             f.flush()
             if base["failure_reason"]:

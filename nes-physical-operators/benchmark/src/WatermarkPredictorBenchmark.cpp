@@ -155,6 +155,13 @@ std::vector<Experiment> buildExperiments()
     const GaussianNoiseModel heavyJitter{{.wallClockStddev = 30.0, .seed = 2}};
     experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) heavy jitter (sd=30)", constantFast, heavyJitter, 100, horizons));
 
+    /// Same jitter applied to the event traces: the stall / catch-up transitions must now be tracked
+    /// through noisy arrivals (the clean versions above isolate the regime change itself).
+    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter (sd=10)", stall, mildJitter, 100, horizons));
+    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) heavy jitter (sd=30)", stall, heavyJitter, 100, horizons));
+    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter (sd=10)", catchUp, mildJitter, 100, horizons));
+    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) heavy jitter (sd=30)", catchUp, heavyJitter, 100, horizons));
+
     /// Stragglers: spike distribution fixed (mean=400, sd=100); sweep over late-fraction.
     const GaussianNoiseModel stragglersMild{
         {.wallClockStddev = 5.0, .lateProbability = 0.10, .lateExtraDelayMean = 200.0, .lateExtraDelayStddev = 50.0, .seed = 3}};
@@ -203,8 +210,7 @@ void printTraces()
     {
         for (const auto& sample : src.generate())
         {
-            std::cout << "TRACE," << name << "," << sample.watermarkTs.getRawValue() << "," << sample.wallClock.getRawValue()
-                      << '\n';
+            std::cout << "TRACE," << name << "," << sample.watermarkTs.getRawValue() << "," << sample.wallClock.getRawValue() << '\n';
         }
     };
     dump("ConstantRate(2.0)", base.constantFast);
@@ -215,8 +221,8 @@ void printTraces()
 /// One CSV row per scored prediction. ns/predict is denormalised onto every row (cell-level timing)
 /// so the notebook needs a single results.csv with no join. benchmark.py routes ROW lines into it.
 /// Trace and predictor names contain no commas, so a plain split parses cleanly downstream.
-void printRows(const std::string& traceName, const std::string& predictorName, const std::vector<PredictionSample>& samples,
-    const TimingStats& timing)
+void printRows(
+    const std::string& traceName, const std::string& predictorName, const std::vector<PredictionSample>& samples, const TimingStats& timing)
 {
     for (const auto& s : samples)
     {

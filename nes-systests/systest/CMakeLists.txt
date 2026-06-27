@@ -144,7 +144,11 @@ if (NOT CODE_COVERAGE)
     ## spillVariant is the outermost dimension. The `none` baseline carries no extra flags (empty
     ## suffix → identical to the original baseline test names); the other variants append their flags
     ## and a name suffix. Every variant runs both interpreter and compiler.
-    set(spillVariants none predictiveSpill alwaysSpill preallocOnly)
+    ## preallocOnly = preemptive slice creation WITHOUT prediction (static event-time lookahead);
+    ## preallocPredictive = preemptive slice creation WITH a watermark predictor driving a wall-clock
+    ## horizon. The `none` baseline is the no-preallocation case, so the three together cover join +
+    ## aggregation with and without predictive preemptive creation.
+    set(spillVariants none predictiveSpill alwaysSpill preallocOnly preallocPredictive)
     set(flags_none "")
     # predictive spill + preemptive slice creation + slice reuse pool
     set(flags_predictiveSpill
@@ -158,9 +162,15 @@ if (NOT CODE_COVERAGE)
             --worker.default_query_execution.spill.enabled=true
             --worker.default_query_execution.spill.policy=REACTIVE
             --worker.default_query_execution.spill.high_memory_bound=0.0)
-    # only preemptive slice creation + slice reuse pool, no spilling
+    # only preemptive slice creation + slice reuse pool, no spilling (static event-time lookahead)
     set(flags_preallocOnly
             --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
+            --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
+    # preemptive slice creation driven by a watermark predictor (wall-clock horizon), no spilling.
+    # Differs from preallocOnly only by the predictor, so the two isolate the effect of prediction.
+    set(flags_preallocPredictive
+            --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
+            --worker.default_query_execution.slice_preallocation.preemptive_predictor=ewma
             --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
 
     foreach (spillVariant IN LISTS spillVariants)

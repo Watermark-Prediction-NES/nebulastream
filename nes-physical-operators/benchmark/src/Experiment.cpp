@@ -30,15 +30,11 @@ Experiment makeCleanExperiment(std::string name, const TraceSource& source, size
 {
     auto trace = source.generate();
     return Experiment{
-        .name = std::move(name),
-        .observed = trace,
-        .truth = std::move(trace),
-        .warmup = warmup,
-        .horizons = std::move(horizons)};
+        .name = std::move(name), .observed = trace, .truth = std::move(trace), .warmup = warmup, .horizons = std::move(horizons)};
 }
 
-Experiment makeNoisyExperiment(
-    std::string name, const TraceSource& source, const NoiseModel& noise, size_t warmup, std::vector<uint64_t> horizons)
+Experiment
+makeNoisyExperiment(std::string name, const TraceSource& source, const NoiseModel& noise, size_t warmup, std::vector<uint64_t> horizons)
 {
     auto clean = source.generate();
     auto noisy = noise.apply(clean);

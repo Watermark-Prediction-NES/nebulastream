@@ -74,6 +74,93 @@ TEST_F(DefaultTimeBasedSliceStoreTest, preemptiveCreateMakesNSlicesAhead)
     ASSERT_TRUE(store.getSliceBySliceEnd(SliceEnd{80}).has_value());
 }
 
+/// Predictive preemptive create: the predictor converts a WALL-CLOCK horizon into a slice count.
+/// We warm it to rate = 10 event-time-ms per wall-clock-ms (watermark 100->200 over wall 10->20), so
+/// at now=20 with a 5 ms wall-clock horizon (deadline 25) predictWallClock(end) = 20 + (end-200)/10.
+/// Slice ends {220,230,240,250} arrive at {22,23,24,25} <= 25; end 260 arrives at 26 > 25.
+TEST_F(DefaultTimeBasedSliceStoreTest, predictivePreemptiveCreateUsesPredictedRate)
+{
+    auto config = makePreallocConfig(/*horizonMs*/ 5, /*pool*/ 0);
+    config.preemptivePredictor.setValue("ewma");
+    DefaultTimeBasedSliceStore store{WindowSize, WindowSlide, SliceCacheConfiguration{}, config};
+    store.incrementNumberOfInputPipelines();
+
+    Timestamp fakeNow{0};
+    store.setWallClockSourceForTesting([&] { return fakeNow; });
+
+    uint64_t createCount = 0;
+    auto createNewSlice = [&](const SliceStart s, const SliceEnd e) -> std::vector<std::shared_ptr<Slice>>
+    {
+        ++createCount;
+        return {std::make_shared<Slice>(s, e)};
+    };
+
+    /// GC ticks are the predictor's sampling point — feed two observations to establish the rate.
+    fakeNow = Timestamp{10};
+    store.garbageCollectSlicesAndWindows(Timestamp{100});
+    fakeNow = Timestamp{20};
+    store.garbageCollectSlicesAndWindows(Timestamp{200});
+
+    const auto slices = store.getSlicesOrCreate(Timestamp{205}, createNewSlice);
+    ASSERT_EQ(slices.size(), 1u);
+    EXPECT_EQ(createCount, 5u) << "1 on-demand (end 210) + 4 predicted preemptive (ends 220..250)";
+
+    EXPECT_TRUE(store.getSliceBySliceEnd(SliceEnd{210}).has_value());
+    EXPECT_TRUE(store.getSliceBySliceEnd(SliceEnd{250}).has_value());
+    EXPECT_FALSE(store.getSliceBySliceEnd(SliceEnd{260}).has_value()) << "end 260 falls past the wall-clock horizon";
+}
+
+/// preemptive_max_slices caps the predicted burst: same warm-up as above, but the cap of 2 stops
+/// creation at ends {220,230} even though the predictor would otherwise reach 250.
+TEST_F(DefaultTimeBasedSliceStoreTest, predictivePreemptiveCreateRespectsMaxSlicesCap)
+{
+    auto config = makePreallocConfig(/*horizonMs*/ 5, /*pool*/ 0);
+    config.preemptivePredictor.setValue("ewma");
+    config.preemptiveMaxSlices.setValue(2);
+    DefaultTimeBasedSliceStore store{WindowSize, WindowSlide, SliceCacheConfiguration{}, config};
+    store.incrementNumberOfInputPipelines();
+
+    Timestamp fakeNow{0};
+    store.setWallClockSourceForTesting([&] { return fakeNow; });
+
+    uint64_t createCount = 0;
+    auto createNewSlice = [&](const SliceStart s, const SliceEnd e) -> std::vector<std::shared_ptr<Slice>>
+    {
+        ++createCount;
+        return {std::make_shared<Slice>(s, e)};
+    };
+
+    fakeNow = Timestamp{10};
+    store.garbageCollectSlicesAndWindows(Timestamp{100});
+    fakeNow = Timestamp{20};
+    store.garbageCollectSlicesAndWindows(Timestamp{200});
+
+    (void)store.getSlicesOrCreate(Timestamp{205}, createNewSlice);
+    EXPECT_EQ(createCount, 3u) << "1 on-demand + 2 preemptive (capped)";
+    EXPECT_TRUE(store.getSliceBySliceEnd(SliceEnd{230}).has_value());
+    EXPECT_FALSE(store.getSliceBySliceEnd(SliceEnd{240}).has_value()) << "cap stops creation before end 240";
+}
+
+/// Cold predictor (never warmed) cannot answer, so the create path falls back to the static
+/// event-time lookahead: horizonMs/slide = 20/10 = 2 slices ahead — identical to the no-predictor case.
+TEST_F(DefaultTimeBasedSliceStoreTest, predictiveColdFallsBackToStaticLookahead)
+{
+    auto config = makePreallocConfig(/*horizonMs*/ 20, /*pool*/ 0);
+    config.preemptivePredictor.setValue("ewma");
+    DefaultTimeBasedSliceStore store{WindowSize, WindowSlide, SliceCacheConfiguration{}, config};
+    store.incrementNumberOfInputPipelines();
+
+    uint64_t createCount = 0;
+    auto createNewSlice = [&](const SliceStart s, const SliceEnd e) -> std::vector<std::shared_ptr<Slice>>
+    {
+        ++createCount;
+        return {std::make_shared<Slice>(s, e)};
+    };
+
+    (void)store.getSlicesOrCreate(Timestamp{50}, createNewSlice);
+    EXPECT_EQ(createCount, 3u) << "cold predictor falls back to static 2-slice lookahead (+1 on-demand)";
+}
+
 /// Recycle round-trip: GC pushes retired slices into the pool; the next on-demand create pops one
 /// and calls reset() instead of allocating. shared_ptr identity proves reuse.
 TEST_F(DefaultTimeBasedSliceStoreTest, recyclePoolReusesSlicesAcrossGc)

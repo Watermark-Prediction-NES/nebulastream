@@ -41,6 +41,7 @@
 namespace NES
 {
 
+class WatermarkPredictor;
 
 /// This struct stores a slice ptr and the state. We require this information, as we have to know the state of a slice for a given window
 struct SlicesAndState
@@ -82,11 +83,21 @@ public:
     std::unique_ptr<SliceStoreRef> createSliceStoreRef(
         DefaultTimeBasedSliceStoreRef::DataStructureExtractor extractor, DefaultTimeBasedSliceStoreRef::CreateSlicesFunction creator);
 
+    /// Override the wall-clock source (default: steady_clock ms). Only for tests, to make the
+    /// predictor-driven preemptive-create path deterministic.
+    void setWallClockSourceForTesting(std::function<Timestamp()> clock);
+
 private:
     /// Pops a recycled slice from the pool and reset()s it; falls back to createNewSlice. Always
     /// returns exactly one slice (the surrounding store assumes 1:1 timestamp → slice for default).
     std::shared_ptr<Slice> obtainSlice(
         SliceStart start, SliceEnd end, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice);
+
+    /// Number of slices to preemptively create ahead of `sliceEnd`. Without a predictor: the static
+    /// event-time lookahead horizonMs/slide. With a warm predictor: every upcoming slice the stream is
+    /// predicted to reach within the wall-clock horizonMs, capped at preemptiveMaxSlices. Falls back to
+    /// the static count while the predictor is still too cold to answer.
+    uint64_t preemptiveSliceCount(SliceEnd sliceEnd, uint64_t slide, uint64_t horizonMs) const;
 
     SliceCacheConfiguration sliceCacheConfiguration;
     SlicePreallocationConfiguration slicePreallocationConfiguration;
@@ -100,6 +111,15 @@ private:
     /// LIFO of slices retired by probe-side GC; build pops + Slice::reset()s instead of allocating
     /// a fresh slice. Drop-oldest (pop_front) when full. Empty + unused when recyclePoolSize == 0.
     folly::Synchronized<std::deque<std::shared_ptr<Slice>>> recyclePool;
+
+    /// Predictor for the wall-clock preemptive-create horizon; null when preemptive_predictor == "off".
+    /// Fed (event-time watermark, wall-clock) on each GC tick, read in the build-side create path —
+    /// hence Synchronized (the predictor itself is not thread-safe).
+    folly::Synchronized<std::unique_ptr<WatermarkPredictor>> preemptivePredictor;
+
+    /// Wall-clock source for predictor observations + the create-horizon deadline. steady_clock ms by
+    /// default; overridable in tests via setWallClockSourceForTesting.
+    std::function<Timestamp()> wallClockNow;
 
     SliceAssigner sliceAssigner;
 
