@@ -58,6 +58,32 @@ TEST_F(RobustAdaptiveKalmanWatermarkPredictorTest, NonPositiveRateDoesNotProduce
     EXPECT_NE(p.predictWallClock(T(2000)).getRawValue(), INVALID_TS);
 }
 
+TEST_F(RobustAdaptiveKalmanWatermarkPredictorTest, RateStaysNonNegativeThroughDeceleration)
+{
+    /// A catch-up burst (rate 8.0) settling back to rate 2.0 feeds a run of negative innovations during
+    /// the deceleration. The regime Q-boost amplifies the gain, and without the non-negativity clamp it
+    /// drives the rate estimate below zero -- which extrapolates to a saturated "never reaches"
+    /// prediction. Invariant under test: the rate estimate stays >= 0 at every step, and the filter
+    /// still re-converges to the post-settle rate.
+    RobustAdaptiveKalmanWatermarkPredictor p;
+    uint64_t w = 1000;
+    uint64_t t = 1000;
+    const auto feed = [&](const uint64_t ticks, const uint64_t eventStep, const uint64_t wallStep)
+    {
+        for (uint64_t i = 0; i < ticks; ++i)
+        {
+            p.observe(T(w), T(t));
+            w += eventStep;
+            t += wallStep;
+            ASSERT_GE(p.currentRateEstimate(), 0.0) << "rate estimate went negative at watermark=" << w;
+        }
+    };
+    feed(100, 100, 50); /// warm-up at rate 2.0
+    feed(50, 400, 50); /// burst at rate 8.0
+    feed(100, 100, 50); /// settle back to rate 2.0 -- the deceleration under test
+    EXPECT_NEAR(p.currentRateEstimate(), 2.0, 0.5) << "rate=" << p.currentRateEstimate();
+}
+
 TEST_F(RobustAdaptiveKalmanWatermarkPredictorTest, GatesSingleStragglerOutlier)
 {
     /// After a clean constant-rate prefix, inject one wildly off watermark. The WoLF gate must keep

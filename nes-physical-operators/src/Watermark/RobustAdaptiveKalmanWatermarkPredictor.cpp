@@ -112,6 +112,14 @@ void RobustAdaptiveKalmanWatermarkPredictor::observe(const Timestamp watermarkTs
     watermarkEstimate = predictedWatermark + (gainWatermark * innovation);
     rateEstimate = predictedRate + (gainRate * innovation);
 
+    /// Watermarks are monotonic non-decreasing, so the advancement rate cannot be negative. A sharp
+    /// deceleration (e.g. a catch-up burst settling back to a slower rate) feeds a run of negative
+    /// innovations that, amplified by the regime Q-boost, would otherwise drive the rate estimate
+    /// below zero -- which extrapolates to a saturated "never reaches" prediction. Clamp to the
+    /// physical floor so the estimate recovers from 0 instead of from a deep negative excursion.
+    /// (Floor is 0, not a positive value: a genuine stall legitimately needs the rate to reach 0.)
+    rateEstimate = std::max(rateEstimate, 0.0);
+
     /// Covariance update: P_new = (I - K H) P_pred.
     varWatermark = (1.0 - gainWatermark) * predictedVarWatermark;
     covWatermarkRate = (1.0 - gainWatermark) * predictedCovWatermarkRate;

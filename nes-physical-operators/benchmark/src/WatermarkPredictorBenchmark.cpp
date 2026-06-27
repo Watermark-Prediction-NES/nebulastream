@@ -124,9 +124,10 @@ struct BaseTraces
     /// then resumes at 2.0. Warm-up ends at the stall onset so the rolling eval spans the whole stall.
     PiecewiseConstantTraceSource stall{{{100, 100, 50}, {100, 0, 50}, {100, 100, 50}}};
 
-    /// Catch-up: rate 2.0, a shorter stall, then a fast burst (rate 8.0) that races to catch up the
-    /// event-time backlog before settling. Breaks extrapolators that carried the stalled rate forward.
-    PiecewiseConstantTraceSource catchUp{{{100, 100, 50}, {50, 0, 50}, {100, 400, 50}}};
+    /// Catch-up: rate 2.0, a shorter stall, a fast burst (rate 8.0) that races to catch up the
+    /// event-time backlog, then settles back to rate 2.0. Breaks extrapolators that carried the
+    /// stalled rate forward, and the final settle catches ones that overshoot on the burst rate.
+    PiecewiseConstantTraceSource catchUp{{{100, 100, 50}, {50, 0, 50}, {100, 400, 50}, {100, 100, 50}}};
 };
 
 std::vector<Experiment> buildExperiments()
@@ -186,8 +187,8 @@ std::vector<PredictorEntry> buildPredictors()
         {.name = "EWMA(alpha=0.3)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(0.3); }},
         {.name = "EWMA(alpha=0.5)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(0.5); }},
         {.name = "EWMA(alpha=1.0)", .make = [] { return std::make_unique<EwmaWatermarkPredictor>(1.0); }},
-        {.name = "Kalman(config1)", .make = [config = config1] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
-        {.name = "Kalman(config2)", .make = [config = config2] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
+        {.name = "Kalman(stable)", .make = [config = config1] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
+        {.name = "Kalman(reactive)", .make = [config = config2] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
         {.name = "RobustAdaptiveKalman", .make = [] { return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>(); }},
     };
 }
