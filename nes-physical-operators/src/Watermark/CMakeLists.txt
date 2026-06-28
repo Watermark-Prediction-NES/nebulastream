@@ -15,6 +15,7 @@ add_source_files(nes-physical-operators
         EwmaWatermarkPredictor.cpp
         IngestionTimeWatermarkAssignerPhysicalOperator.cpp
         KalmanWatermarkPredictor.cpp
+        MlpWatermarkPredictor.cpp
         RobustAdaptiveKalmanWatermarkPredictor.cpp
         MultiOriginWatermarkProcessor.cpp
         TimeFunction.cpp
