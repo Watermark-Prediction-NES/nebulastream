@@ -21,6 +21,7 @@
 #include <string_view>
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
+#include <Watermark/MlpWatermarkPredictor.hpp>
 #include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 
@@ -45,6 +46,10 @@ inline std::unique_ptr<WatermarkPredictor> makeWatermarkPredictor(std::string_vi
     if (upper == "ROBUSTKALMAN")
     {
         return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>();
+    }
+    if (upper == "MLP")
+    {
+        return std::make_unique<MlpWatermarkPredictor>();
     }
     return std::make_unique<EwmaWatermarkPredictor>(0.3);
 }
