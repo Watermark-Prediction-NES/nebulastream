@@ -71,12 +71,14 @@ def parse_trace_rows(output: str) -> list[tuple]:
 
 def parse_rows(output: str) -> list[dict]:
     """Split the `ROW,trace,predictor,eval_offset,horizon,abs_err,signed_err,true_wall,ns` lines.
-    Trace and predictor names contain no commas, so a maxsplit gives exactly the column count."""
+    The last 6 fields are always numeric; split from the right so predictor names containing
+    commas (e.g. `MLP(win=16,h=16)`) are captured whole in the left portion."""
     rows = []
     for line in output.splitlines():
         if not line.startswith("ROW,"):
             continue
-        _, trace, predictor, off, hor, abserr, signerr, truew, nspp = line.split(",", 8)
+        left, off, hor, abserr, signerr, truew, nspp = line.rsplit(",", 6)
+        _, trace, predictor = left.split(",", 2)
         rows.append({
             "trace": trace,
             "predictor": predictor,
