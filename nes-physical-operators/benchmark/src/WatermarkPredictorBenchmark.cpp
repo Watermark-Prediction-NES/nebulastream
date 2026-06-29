@@ -31,6 +31,7 @@
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
 #include <Watermark/MlpWatermarkPredictor.hpp>
+#include <Watermark/NeuralKalmanWatermarkPredictor.hpp>
 #include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 #include <BenchmarkRunner.hpp>
@@ -199,6 +200,7 @@ std::vector<PredictorEntry> buildPredictors()
         {.name = "Kalman(reactive)", .make = [config = config2] { return std::make_unique<KalmanWatermarkPredictor>(config); }},
         {.name = "RobustAdaptiveKalman", .make = [] { return std::make_unique<RobustAdaptiveKalmanWatermarkPredictor>(); }},
         {.name = "MLP(win=16,h=16)", .make = [] { return std::make_unique<MlpWatermarkPredictor>(); }},
+        {.name = "NeuralKalman(h=8)", .make = [] { return std::make_unique<NeuralKalmanWatermarkPredictor>(); }},
     };
 }
 

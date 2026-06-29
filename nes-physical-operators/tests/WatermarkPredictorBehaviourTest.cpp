@@ -21,6 +21,7 @@
 #include <Watermark/EwmaWatermarkPredictor.hpp>
 #include <Watermark/KalmanWatermarkPredictor.hpp>
 #include <Watermark/MlpWatermarkPredictor.hpp>
+#include <Watermark/NeuralKalmanWatermarkPredictor.hpp>
 #include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 #include <gtest/gtest.h>
@@ -49,6 +50,10 @@ public:
         if (GetParam() == "mlp")
         {
             return std::make_unique<MlpWatermarkPredictor>();
+        }
+        if (GetParam() == "neuralkalman")
+        {
+            return std::make_unique<NeuralKalmanWatermarkPredictor>();
         }
         return std::make_unique<KalmanWatermarkPredictor>();
     }
@@ -128,7 +133,7 @@ TEST_P(WatermarkPredictorBehaviourTest, PredictionForLastWatermarkEqualsLastWall
 INSTANTIATE_TEST_SUITE_P(
     Predictors,
     WatermarkPredictorBehaviourTest,
-    ::testing::Values("ewma", "kalman", "robust", "mlp"),
+    ::testing::Values("ewma", "kalman", "robust", "mlp", "neuralkalman"),
     [](const auto& info) { return info.param; });
 
 }
