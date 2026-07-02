@@ -17,7 +17,8 @@
 Builds the binary (unless --skip-build), runs it, captures stdout to output.txt, and splits
 the CSV stream it prints into results.csv (one row per scored prediction from the rolling
 prequential evaluation) and traces.csv (the clean scenario shapes). No queries run — this
-measures predictor accuracy per (eval_offset, horizon) and predictWallClock() timing.
+measures predictor accuracy per (eval_offset, horizon), plus latency and throughput of both
+predictWallClock() (the query path) and observe() (the per-tuple ingestion path).
 
 CLI:
     --skip-build      Skip cmake configure/build (use existing binary).
@@ -37,9 +38,22 @@ from pathlib import Path
 
 import config as cfg
 
-### One row per scored prediction. ns_per_predict is denormalised (cell-level timing repeated on
-### every row) so the notebook reads a single results.csv with no join.
-RESULT_COLS = ["trace", "predictor", "eval_offset", "horizon", "abs_err", "signed_err", "true_wall", "ns_per_predict"]
+### One row per scored prediction. Timing columns are denormalised (cell-level, repeated on every
+### row) so the notebook reads a single results.csv with no join. predict_* times predictWallClock()
+### (the query path); observe_* times observe() (the per-tuple ingestion path).
+RESULT_COLS = [
+    "trace",
+    "predictor",
+    "eval_offset",
+    "horizon",
+    "abs_err",
+    "signed_err",
+    "true_wall",
+    "predict_ns_per_op",
+    "predict_ops_per_sec",
+    "observe_ns_per_op",
+    "observe_ops_per_sec",
+]
 
 
 def sh(cmd: str, *, env: dict | None = None) -> None:
@@ -70,14 +84,15 @@ def parse_trace_rows(output: str) -> list[tuple]:
 
 
 def parse_rows(output: str) -> list[dict]:
-    """Split the `ROW,trace,predictor,eval_offset,horizon,abs_err,signed_err,true_wall,ns` lines.
-    The last 6 fields are always numeric; split from the right so predictor names containing
-    commas (e.g. `MLP(win=16,h=16)`) are captured whole in the left portion."""
+    """Split the `ROW,trace,predictor,eval_offset,horizon,abs_err,signed_err,true_wall,
+    predict_ns,predict_ops,observe_ns,observe_ops` lines. The last 10 fields are always numeric;
+    split from the right so predictor names containing commas (e.g. `MLP(win=16,h=16)`) are
+    captured whole in the left portion."""
     rows = []
     for line in output.splitlines():
         if not line.startswith("ROW,"):
             continue
-        left, off, hor, abserr, signerr, truew, nspp = line.rsplit(",", 6)
+        left, off, hor, abserr, signerr, truew, predns, predops, obsns, obsops = line.rsplit(",", 9)
         _, trace, predictor = left.split(",", 2)
         rows.append({
             "trace": trace,
@@ -87,7 +102,10 @@ def parse_rows(output: str) -> list[dict]:
             "abs_err": float(abserr),
             "signed_err": float(signerr),
             "true_wall": float(truew),
-            "ns_per_predict": float(nspp),
+            "predict_ns_per_op": float(predns),
+            "predict_ops_per_sec": float(predops),
+            "observe_ns_per_op": float(obsns),
+            "observe_ops_per_sec": float(obsops),
         })
     return rows
 
@@ -150,8 +168,8 @@ def _demo() -> None:
     assert tr == [("Stall(2.0->0)", 1500, 2000), ("CatchUp(2.0->8.0)", 3000, 2500)], tr
 
     sample = (
-        "ROW,ConstantRate(2.0) clean,EWMA(alpha=0.3),0,500,12.340,12.340,1100.000,9.980\n"
-        "ROW,ConstantRate(2.0) clean,RobustAdaptiveKalman,3,5000,-7.100,-7.100,21000.000,13.000\n"
+        "ROW,ConstantRate(2.0) clean,EWMA(alpha=0.3),0,500,12.340,12.340,1100.000,9.980,100200300.500,4.500,222000000.000\n"
+        "ROW,ConstantRate(2.0) clean,RobustAdaptiveKalman,3,5000,-7.100,-7.100,21000.000,13.000,76900000.000,45.000,22200000.000\n"
         "TRACE,ConstantRate(2.0),1000,1000\n"  # interleaved trace line must be ignored here
     )
     rows = parse_rows(sample)
@@ -161,11 +179,15 @@ def _demo() -> None:
     assert rows[0]["eval_offset"] == 0
     assert rows[0]["horizon"] == 500
     assert rows[0]["abs_err"] == 12.34
-    assert rows[0]["ns_per_predict"] == 9.98
+    assert rows[0]["predict_ns_per_op"] == 9.98
+    assert rows[0]["predict_ops_per_sec"] == 100200300.5
+    assert rows[0]["observe_ns_per_op"] == 4.5
+    assert rows[0]["observe_ops_per_sec"] == 222000000.0
     assert rows[1]["predictor"] == "RobustAdaptiveKalman"
     assert rows[1]["horizon"] == 5000
     assert rows[1]["signed_err"] == -7.10
     assert rows[1]["true_wall"] == 21000.0
+    assert rows[1]["observe_ops_per_sec"] == 22200000.0
     print("demo ok")
 
 
