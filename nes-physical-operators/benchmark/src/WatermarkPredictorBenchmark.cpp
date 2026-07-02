@@ -59,21 +59,29 @@ constexpr std::size_t Repetitions = 5;
 constexpr std::size_t PredictQueriesPerRep = 100'000'000;
 constexpr std::uint64_t TargetSpan = 1ULL << 20;
 
-/// Per-cell predict() timing aggregated over Repetitions reps.
+/// observe() is far more expensive than predictWallClock() for the ML predictors (a full
+/// forward+backward pass vs. a closed-form extrapolation), so it gets its own, much smaller op
+/// budget -- tuned so the heaviest predictor (MLP) still finishes a rep in roughly a second.
+constexpr std::size_t ObserveCallsPerRep = 2'000'000;
+
+/// Per-cell timing of one predictor operation (predictWallClock() or observe()), aggregated over
+/// Repetitions reps. Reports both latency (ns/op) and its reciprocal, throughput (ops/sec), so
+/// downstream consumers don't have to invert one to get the other.
 struct TimingStats
 {
     std::size_t reps{0};
     double meanMs{0.0};
     double minMs{0.0};
-    double nsPerPredict{0.0};
+    double nsPerOp{0.0};
+    double opsPerSec{0.0};
 };
 
 /// Times predictWallClock() only: the predictor is driven through the same observed prefix the
 /// accuracy run uses (untimed), then a fixed batch of queries is timed. Deterministic accuracy is
 /// unaffected; this just measures prediction cost.
-TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
+TimingStats timePredict(const PredictorEntry& entry, const Experiment& exp)
 {
-    TimingStats stats{.reps = Repetitions, .meanMs = 0.0, .minMs = 0.0, .nsPerPredict = 0.0};
+    TimingStats stats{.reps = Repetitions};
     if (exp.warmup == 0 || exp.warmup > exp.observed.size())
     {
         return stats;
@@ -111,7 +119,53 @@ TimingStats timePredictor(const PredictorEntry& entry, const Experiment& exp)
 
     stats.meanMs = sumMs / static_cast<double>(Repetitions);
     stats.minMs = minMs;
-    stats.nsPerPredict = (stats.meanMs * 1e6) / static_cast<double>(PredictQueriesPerRep);
+    stats.nsPerOp = (stats.meanMs * 1e6) / static_cast<double>(PredictQueriesPerRep);
+    stats.opsPerSec = (stats.nsPerOp > 0.0) ? (1e9 / stats.nsPerOp) : 0.0;
+    return stats;
+}
+
+/// Times observe() only: this is the per-tuple ingestion path (every incoming watermark update
+/// calls it, see DefaultTimeBasedSliceStore/PressureSpillPolicy), so its throughput -- not just
+/// predictWallClock()'s latency -- bounds how fast a pipeline can feed the predictor. The predictor
+/// is warmed up identically to the accuracy run (untimed), then fed a synthetic strictly-increasing
+/// stream (rate 1.0) so every timed call takes the real "new observation" path rather than the cheap
+/// out-of-order/duplicate rejection early-out.
+TimingStats timeObserve(const PredictorEntry& entry, const Experiment& exp)
+{
+    TimingStats stats{.reps = Repetitions};
+    if (exp.warmup == 0 || exp.warmup > exp.observed.size())
+    {
+        return stats;
+    }
+
+    double sumMs = 0.0;
+    double minMs = std::numeric_limits<double>::max();
+    for (std::size_t rep = 0; rep < Repetitions; ++rep)
+    {
+        auto predictor = entry.make();
+        for (std::size_t i = 0; i < exp.warmup; ++i)
+        {
+            predictor->observe(exp.observed[i].watermarkTs, exp.observed[i].wallClock);
+        }
+        const std::uint64_t baseWatermark = exp.observed[exp.warmup - 1].watermarkTs.getRawValue();
+        const std::uint64_t baseWallClock = exp.observed[exp.warmup - 1].wallClock.getRawValue();
+
+        const auto start = std::chrono::steady_clock::now();
+        for (std::size_t i = 1; i <= ObserveCallsPerRep; ++i)
+        {
+            predictor->observe(Timestamp{baseWatermark + i}, Timestamp{baseWallClock + i});
+        }
+        const auto end = std::chrono::steady_clock::now();
+
+        const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+        sumMs += ms;
+        minMs = std::min(minMs, ms);
+    }
+
+    stats.meanMs = sumMs / static_cast<double>(Repetitions);
+    stats.minMs = minMs;
+    stats.nsPerOp = (stats.meanMs * 1e6) / static_cast<double>(ObserveCallsPerRep);
+    stats.opsPerSec = (stats.nsPerOp > 0.0) ? (1e9 / stats.nsPerOp) : 0.0;
     return stats;
 }
 
@@ -222,16 +276,22 @@ void printTraces()
     dump("CatchUp(2.0->8.0)", base.catchUp);
 }
 
-/// One CSV row per scored prediction. ns/predict is denormalised onto every row (cell-level timing)
-/// so the notebook needs a single results.csv with no join. benchmark.py routes ROW lines into it.
-/// Trace and predictor names contain no commas, so a plain split parses cleanly downstream.
+/// One CSV row per scored prediction. Timing (predict + observe, latency and throughput) is
+/// denormalised onto every row (cell-level, constant per trace x predictor) so the notebook needs
+/// a single results.csv with no join. benchmark.py routes ROW lines into it. Trace and predictor
+/// names contain no commas, so a plain split parses cleanly downstream.
 void printRows(
-    const std::string& traceName, const std::string& predictorName, const std::vector<PredictionSample>& samples, const TimingStats& timing)
+    const std::string& traceName,
+    const std::string& predictorName,
+    const std::vector<PredictionSample>& samples,
+    const TimingStats& predictTiming,
+    const TimingStats& observeTiming)
 {
     for (const auto& s : samples)
     {
         std::cout << "ROW," << traceName << "," << predictorName << "," << s.evalOffset << "," << s.horizon << "," << s.absErr << ","
-                  << s.signedErr << "," << s.trueWall << "," << timing.nsPerPredict << '\n';
+                  << s.signedErr << "," << s.trueWall << "," << predictTiming.nsPerOp << "," << predictTiming.opsPerSec << ","
+                  << observeTiming.nsPerOp << "," << observeTiming.opsPerSec << '\n';
     }
 }
 
@@ -278,8 +338,9 @@ int run()
             const auto cellStart = std::chrono::steady_clock::now();
             auto p = predictor.make();
             const auto samples = runBenchmark(*p, exp.observed, exp.truth, exp.warmup, exp.horizons);
-            const auto timing = timePredictor(predictor, exp);
-            printRows(exp.name, predictor.name, samples, timing);
+            const auto predictTiming = timePredict(predictor, exp);
+            const auto observeTiming = timeObserve(predictor, exp);
+            printRows(exp.name, predictor.name, samples, predictTiming, observeTiming);
             ++cell;
 
             const auto now = std::chrono::steady_clock::now();
