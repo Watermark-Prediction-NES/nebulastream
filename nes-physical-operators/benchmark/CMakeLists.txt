@@ -11,7 +11,6 @@
 # limitations under the License.
 
 add_executable(WatermarkPredictorBenchmark
-        src/BenchmarkRunner.cpp
         src/Experiment.cpp
         src/Noise/GaussianNoiseModel.cpp
         src/Trace/PiecewiseConstantTraceSource.cpp

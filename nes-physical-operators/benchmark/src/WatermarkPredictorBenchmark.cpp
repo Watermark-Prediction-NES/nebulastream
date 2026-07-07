@@ -34,9 +34,9 @@
 #include <Watermark/NeuralKalmanWatermarkPredictor.hpp>
 #include <Watermark/RobustAdaptiveKalmanWatermarkPredictor.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
-#include <BenchmarkRunner.hpp>
 #include <Experiment.hpp>
 #include <PredictionMetrics.hpp>
+#include <TruthOracle.hpp>
 
 namespace NES
 {
@@ -92,7 +92,7 @@ TimingStats timePredict(const PredictorEntry& entry, const Experiment& exp)
     double minMs = std::numeric_limits<double>::max();
     for (std::size_t rep = 0; rep < Repetitions; ++rep)
     {
-        auto predictor = entry.make();
+        const auto predictor = entry.make();
         for (std::size_t i = 0; i < exp.warmup; ++i)
         {
             predictor->observe(exp.observed[i].watermarkTs, exp.observed[i].wallClock);
@@ -142,7 +142,7 @@ TimingStats timeObserve(const PredictorEntry& entry, const Experiment& exp)
     double minMs = std::numeric_limits<double>::max();
     for (std::size_t rep = 0; rep < Repetitions; ++rep)
     {
-        auto predictor = entry.make();
+        const auto predictor = entry.make();
         for (std::size_t i = 0; i < exp.warmup; ++i)
         {
             predictor->observe(exp.observed[i].watermarkTs, exp.observed[i].wallClock);
@@ -167,6 +167,58 @@ TimingStats timeObserve(const PredictorEntry& entry, const Experiment& exp)
     stats.nsPerOp = (stats.meanMs * 1e6) / static_cast<double>(ObserveCallsPerRep);
     stats.opsPerSec = (stats.nsPerOp > 0.0) ? (1e9 / stats.nsPerOp) : 0.0;
     return stats;
+}
+
+std::vector<PredictionSample> runBenchmark(
+    WatermarkPredictor& predictor,
+    const WatermarkTrace& observed,
+    const WatermarkTrace& truth,
+    size_t warmup,
+    const std::vector<uint64_t>& horizons)
+{
+    std::vector<PredictionSample> samples;
+    if (warmup == 0 || warmup > observed.size())
+    {
+        return samples;
+    }
+
+    /// Batch warm-up: observe the prefix without scoring so the predictor reaches steady state.
+    for (size_t i = 0; i < warmup; ++i)
+    {
+        predictor.observe(observed[i].watermarkTs, observed[i].wallClock);
+    }
+
+    /// Prequential phase: observe one sample, then query every horizon. A horizon whose crossing
+    /// falls past the end of the truth trace yields no ground truth and is skipped (so eval ticks
+    /// near the end naturally contribute fewer horizons).
+    for (size_t i = warmup; i < observed.size(); ++i)
+    {
+        predictor.observe(observed[i].watermarkTs, observed[i].wallClock);
+        const auto lastSeenWatermark = observed[i].watermarkTs;
+        for (const auto h : horizons)
+        {
+            const Timestamp target{lastSeenWatermark.getRawValue() + h};
+            const auto trueT = trueWallClockForTarget(truth, target);
+            if (!trueT)
+            {
+                continue;
+            }
+            const auto predicted = predictor.predictWallClock(target);
+            if (predicted.getRawValue() == Timestamp::INVALID_VALUE)
+            {
+                continue;
+            }
+            const double signedErr = static_cast<double>(predicted.getRawValue()) - static_cast<double>(trueT->getRawValue());
+            samples.push_back(
+                PredictionSample{
+                    .evalOffset = i - warmup,
+                    .horizon = h,
+                    .absErr = std::abs(signedErr),
+                    .signedErr = signedErr,
+                    .trueWall = static_cast<double>(trueT->getRawValue())});
+        }
+    }
+    return samples;
 }
 
 /// The distinct clean scenario shapes. Defined once so buildExperiments() and printTraces() agree.
