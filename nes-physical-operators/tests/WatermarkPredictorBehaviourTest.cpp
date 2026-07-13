@@ -106,6 +106,26 @@ TEST_P(WatermarkPredictorBehaviourTest, DuplicateWallClockIsIgnored)
     EXPECT_NE(p->predictWallClock(T(5000)).getRawValue(), INVALID_TS);
 }
 
+TEST_P(WatermarkPredictorBehaviourTest, RegressedWatermarkIsIgnored)
+{
+    /// Rate = 100 event-time units per 50 wall-clock units = 2.0
+    auto p = make();
+    const auto end = feedConstantRate(*p, 50, 100, 50);
+
+    /// A watermark lower than the last one accepted, arriving with a later wall-clock time -- e.g.
+    /// an out-of-order tuple reaching the watermark computation directly, or a naive multi-partition
+    /// merge. Must be rejected outright, not folded in as a (nonsensical) negative-rate sample.
+    p->observe(T(end.lastWatermark - 500), T(end.lastWallClock + 50));
+
+    /// State must be exactly as if the regressed sample never arrived: same tolerance/expectation as
+    /// ConstantRateExtrapolatesAccurately.
+    const auto predicted = p->predictWallClock(T(end.lastWatermark + 2000));
+    ASSERT_NE(predicted.getRawValue(), INVALID_TS);
+    const uint64_t expected = end.lastWallClock + 1000;
+    const uint64_t err = predicted.getRawValue() > expected ? predicted.getRawValue() - expected : expected - predicted.getRawValue();
+    EXPECT_LE(err, 50U) << "predicted=" << predicted.getRawValue() << " expected=" << expected;
+}
+
 TEST_P(WatermarkPredictorBehaviourTest, AdaptsAfterRateChange)
 {
     auto p = make();

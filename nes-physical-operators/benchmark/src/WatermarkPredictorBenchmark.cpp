@@ -25,7 +25,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <Noise/CompositeNoiseModel.hpp>
 #include <Noise/GaussianNoiseModel.hpp>
+#include <Noise/OutOfOrderNoiseModel.hpp>
 #include <Time/Timestamp.hpp>
 #include <Trace/PiecewiseConstantTraceSource.hpp>
 #include <Watermark/EwmaWatermarkPredictor.hpp>
@@ -270,6 +272,17 @@ std::vector<Experiment> buildExperiments()
     experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter (sd=10)", catchUp, mildJitter, 100, horizons));
     experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) heavy jitter (sd=30)", catchUp, heavyJitter, 100, horizons));
 
+    /// Trained through the transition: warmup extends partway into the regime change itself (mid the
+    /// short first stall phase in each trace), so the predictor's steady state at scoring-start
+    /// already reflects the shift instead of starting exactly at its onset like the baselines above.
+    /// Exercises online adaptation *during* warmup, not just detection of a transition that begins
+    /// only once scoring does. stall's first stall phase spans ticks [100, 200); catchUp's spans
+    /// [100, 150) -- both warmup values below land halfway through.
+    experiments.push_back(makeCleanExperiment("Stall(2.0->0) clean warmup-mid-stall", stall, 150, horizons));
+    experiments.push_back(makeCleanExperiment("CatchUp(2.0->8.0) clean warmup-mid-stall", catchUp, 125, horizons));
+    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter warmup-mid-stall", stall, mildJitter, 150, horizons));
+    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter warmup-mid-stall", catchUp, mildJitter, 125, horizons));
+
     /// Stragglers: spike distribution fixed (mean=400, sd=100); sweep over late-fraction.
     const GaussianNoiseModel stragglersMild{
         {.wallClockStddev = 5.0, .lateProbability = 0.10, .lateExtraDelayMean = 200.0, .lateExtraDelayStddev = 50.0, .seed = 3}};
@@ -287,6 +300,30 @@ std::vector<Experiment> buildExperiments()
         experiments.push_back(
             makeNoisyExperiment("ConstantRate(2.0) + " + pctLabel + "% heavy stragglers", constantFast, sweep, 100, horizons));
     }
+
+    /// Out-of-order tuples: watermark VALUES arrive out of sequence (bounded local reordering) while
+    /// wall-clock delivery time keeps advancing normally -- a genuinely different failure mode from
+    /// the wall-clock jitter/lateness above, which never regresses the watermark itself. Exercises
+    /// the watermark-regression guard every predictor's observe() has to reject on (see
+    /// EwmaWatermarkPredictor::observe() etc.: `watermarkTs < lastWatermark`).
+    const OutOfOrderNoiseModel mildReorder{{.reorderProbability = 0.20, .maxDelay = 3, .seed = 8}};
+    experiments.push_back(
+        makeNoisyExperiment("ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)", constantFast, mildReorder, 100, horizons));
+
+    const OutOfOrderNoiseModel heavyReorder{{.reorderProbability = 0.50, .maxDelay = 8, .seed = 9}};
+    experiments.push_back(
+        makeNoisyExperiment("ConstantRate(2.0) + heavy out-of-order (p=0.50 maxDelay=8)", constantFast, heavyReorder, 100, horizons));
+
+    experiments.push_back(
+        makeNoisyExperiment("Stall(2.0->0) + mild out-of-order (p=0.20 maxDelay=3)", stall, mildReorder, 100, horizons));
+    experiments.push_back(
+        makeNoisyExperiment("CatchUp(2.0->8.0) + mild out-of-order (p=0.20 maxDelay=3)", catchUp, mildReorder, 100, horizons));
+
+    /// Realistic combination: jitter and reordering are independent axes in practice (both stem from
+    /// network/scheduling variance), so a stream can exhibit both at once.
+    const CompositeNoiseModel jitterAndReorder{{mildJitter, mildReorder}};
+    experiments.push_back(makeNoisyExperiment(
+        "ConstantRate(2.0) + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)", constantFast, jitterAndReorder, 100, horizons));
 
     return experiments;
 }

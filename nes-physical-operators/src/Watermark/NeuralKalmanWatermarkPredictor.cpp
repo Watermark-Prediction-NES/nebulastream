@@ -264,13 +264,16 @@ void NeuralKalmanWatermarkPredictor::observe(const Timestamp watermarkTs, const 
         covWatermarkRate = 0.0;
         varRate = cfg.initialRateVariance;
         lastWallClock = wallClock;
+        lastWatermark = watermarkTs;
         initialized = true;
         initNetwork();
         return;
     }
 
-    /// Require dt > 0 for F to be well-defined; reject duplicate / out-of-order wall-clock samples.
-    if (wallClock <= lastWallClock)
+    /// Require dt > 0 for F to be well-defined; reject duplicate/out-of-order wall-clock samples, and
+    /// reject a watermark that regresses below what was already observed (e.g. an out-of-order tuple
+    /// reaching the watermark computation directly) rather than train the gain net on a bogus innovation.
+    if (wallClock <= lastWallClock || watermarkTs < lastWatermark)
     {
         return;
     }
@@ -365,6 +368,7 @@ void NeuralKalmanWatermarkPredictor::observe(const Timestamp watermarkTs, const 
     hasCache = true;
 
     lastWallClock = wallClock;
+    lastWatermark = watermarkTs;
 }
 
 Timestamp NeuralKalmanWatermarkPredictor::predictWallClock(const Timestamp target) const

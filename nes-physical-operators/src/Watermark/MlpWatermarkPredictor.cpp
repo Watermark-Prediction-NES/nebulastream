@@ -242,8 +242,9 @@ void MlpWatermarkPredictor::observe(const Timestamp watermarkTs, const Timestamp
         return;
     }
 
-    /// Require dt > 0; reject duplicate / out-of-order wall-clock samples (as EWMA/Kalman do).
-    if (wallClock <= lastWallClock)
+    /// Require dt > 0; reject duplicate/out-of-order wall-clock samples, and reject a watermark that
+    /// regresses below what was already observed (as EWMA/Kalman do).
+    if (wallClock <= lastWallClock || watermarkTs < lastWatermark)
     {
         return;
     }

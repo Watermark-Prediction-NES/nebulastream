@@ -103,6 +103,9 @@ private:
 
     bool initialized{false};
     Timestamp lastWallClock{0};
+    /// Last accepted raw watermark (not the filtered watermarkEstimate); guards against a watermark
+    /// that regresses below what was already observed.
+    Timestamp lastWatermark{0};
 };
 
 }

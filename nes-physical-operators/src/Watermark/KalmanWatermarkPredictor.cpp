@@ -67,12 +67,15 @@ void KalmanWatermarkPredictor::observe(const Timestamp watermarkTs, const Timest
         covWatermarkRate = 0.0;
         varRate = cfg.initialRateVariance;
         lastWallClock = wallClock;
+        lastWatermark = watermarkTs;
         initialized = true;
         return;
     }
 
-    /// Require dt > 0 for F to be well-defined; reject duplicate / out-of-order wall-clock samples.
-    if (wallClock <= lastWallClock)
+    /// Require dt > 0 for F to be well-defined; reject duplicate/out-of-order wall-clock samples, and
+    /// reject a watermark that regresses below what was already observed (e.g. an out-of-order tuple
+    /// reaching the watermark computation directly) rather than feed a negative-rate innovation.
+    if (wallClock <= lastWallClock || watermarkTs < lastWatermark)
     {
         return;
     }
@@ -115,6 +118,7 @@ void KalmanWatermarkPredictor::observe(const Timestamp watermarkTs, const Timest
     varRate = predictedVarRate - (gainRate * predictedCovWatermarkRate);
 
     lastWallClock = wallClock;
+    lastWatermark = watermarkTs;
 }
 
 Timestamp KalmanWatermarkPredictor::predictWallClock(const Timestamp target) const

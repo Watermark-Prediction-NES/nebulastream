@@ -42,9 +42,11 @@ void EwmaWatermarkPredictor::observe(const Timestamp watermarkTs, const Timestam
         hasFirstObservation = true;
         return;
     }
-    if (wallClock <= lastWallClock)
+    if (wallClock <= lastWallClock || watermarkTs < lastWatermark)
     {
-        /// Same or out-of-order wall-clock sample: skip to keep dt > 0.
+        /// Same/out-of-order wall-clock sample (keeps dt > 0), or a watermark that regresses below
+        /// the last accepted one (e.g. an out-of-order tuple reaching the watermark computation
+        /// directly, or a naive multi-partition merge): skip rather than feed a negative rate.
         return;
     }
     const auto watermarkDelta = static_cast<double>(watermarkTs.getRawValue()) - static_cast<double>(lastWatermark.getRawValue());

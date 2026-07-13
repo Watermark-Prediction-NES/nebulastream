@@ -12,7 +12,9 @@
 
 add_executable(WatermarkPredictorBenchmark
         src/Experiment.cpp
+        src/Noise/CompositeNoiseModel.cpp
         src/Noise/GaussianNoiseModel.cpp
+        src/Noise/OutOfOrderNoiseModel.cpp
         src/Trace/PiecewiseConstantTraceSource.cpp
         src/TruthOracle.cpp
         src/WatermarkPredictorBenchmark.cpp

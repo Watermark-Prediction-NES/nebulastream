@@ -59,12 +59,15 @@ void RobustAdaptiveKalmanWatermarkPredictor::observe(const Timestamp watermarkTs
         lastSign = 0;
         regimeActive = false;
         lastWallClock = wallClock;
+        lastWatermark = watermarkTs;
         initialized = true;
         return;
     }
 
-    /// Require dt > 0; reject duplicate / out-of-order wall-clock samples.
-    if (wallClock <= lastWallClock)
+    /// Require dt > 0; reject duplicate/out-of-order wall-clock samples, and reject a watermark that
+    /// regresses below what was already observed (e.g. an out-of-order tuple reaching the watermark
+    /// computation directly) rather than feed a negative-rate innovation through the gate/adaptation.
+    if (wallClock <= lastWallClock || watermarkTs < lastWatermark)
     {
         return;
     }
@@ -159,6 +162,7 @@ void RobustAdaptiveKalmanWatermarkPredictor::observe(const Timestamp watermarkTs
     regimeActive = signRun >= cfg.regimeRun;
 
     lastWallClock = wallClock;
+    lastWatermark = watermarkTs;
 }
 
 Timestamp RobustAdaptiveKalmanWatermarkPredictor::predictWallClock(const Timestamp target) const
