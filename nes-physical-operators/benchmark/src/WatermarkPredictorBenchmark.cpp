@@ -281,6 +281,12 @@ std::vector<Experiment> buildExperiments()
     /// the whole rolling eval.
     const std::vector<uint64_t> horizons{500, 2000, 5000};
 
+    /// Extended horizon for fluctuating traces: the fluctuating cycle spans ~55,000 event-time units
+    /// per repetition (rates 2.0×100t + 5.0×100t + 1.0×100t + stall×100t + 3.0×100t), so the three
+    /// short horizons above never cross a phase boundary. Adding 15,000 forces a cross-boundary
+    /// prediction (stall → recovery) that is the hardest case for any predictor.
+    const std::vector<uint64_t> fluctHorizons{500, 2000, 5000, 15000};
+
     std::vector<Experiment> experiments;
 
     /// Clean baselines.
@@ -339,8 +345,8 @@ std::vector<Experiment> buildExperiments()
     const OutOfOrderNoiseModel mildReorder{{.reorderProbability = 0.20, .maxDelay = 3, .seed = 8}};
     const OutOfOrderNoiseModel heavyReorder{{.reorderProbability = 0.50, .maxDelay = 8, .seed = 9}};
 
-    /// Stationary-rate control: constant 2.0 over a long trace (warmup 200, ~800 scored ticks), so
-    /// the reorder noise is the only thing the predictor has to cope with.
+    /// Stationary-rate out-of-order: constant 2.0 over a long trace (~800 scored ticks), so the reorder
+    /// noise is the only thing the predictor has to cope with.
     experiments.push_back(
         makeNoisyExperiment("ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)", constantFast, mildReorder, 200, horizons));
     experiments.push_back(
@@ -348,24 +354,25 @@ std::vector<Experiment> buildExperiments()
 
     /// Clean fluctuating reference: the same long, many-regime trace with no reorder, so the reorder
     /// penalty below can be read against a same-trace baseline that already exercises online
-    /// adaptation (warmup 1000 spans two full 500-tick cycles).
-    experiments.push_back(makeCleanExperiment("Fluctuating clean", fluctuating, 1000, horizons));
+    /// adaptation (warmup 1000 spans two full 500-tick cycles). Uses fluctHorizons to include a
+    /// cross-phase-boundary look-ahead (15,000 event-time units spans ~1.5 phases).
+    experiments.push_back(makeCleanExperiment("Fluctuating clean", fluctuating, 1000, fluctHorizons));
 
     /// Fluctuating rate + reorder: the rate keeps changing across the whole run and the warmup spans
     /// several cycles, so the online (ML) predictors reach scoring already trained on a varying
     /// regime and must keep adapting -- now through out-of-order arrivals as well. This is the case
     /// the short single-transition traces could not exercise.
     experiments.push_back(
-        makeNoisyExperiment("Fluctuating + mild out-of-order (p=0.20 maxDelay=3)", fluctuating, mildReorder, 1000, horizons));
+        makeNoisyExperiment("Fluctuating + mild out-of-order (p=0.20 maxDelay=3)", fluctuating, mildReorder, 1000, fluctHorizons));
     experiments.push_back(
-        makeNoisyExperiment("Fluctuating + heavy out-of-order (p=0.50 maxDelay=8)", fluctuating, heavyReorder, 1000, horizons));
+        makeNoisyExperiment("Fluctuating + heavy out-of-order (p=0.50 maxDelay=8)", fluctuating, heavyReorder, 1000, fluctHorizons));
 
     /// Realistic combination: jitter and reordering are independent axes in practice (both stem from
     /// network/scheduling variance), so a stream can exhibit both at once.
     const GaussianNoiseModel mildJitter{{.wallClockStddev = 10.0, .seed = 1}};
     const CompositeNoiseModel jitterAndReorder{{mildJitter, mildReorder}};
     experiments.push_back(makeNoisyExperiment(
-        "Fluctuating + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)", fluctuating, jitterAndReorder, 1000, horizons));
+        "Fluctuating + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)", fluctuating, jitterAndReorder, 1000, fluctHorizons));
 
     return experiments;
 }
@@ -408,8 +415,9 @@ void printTraces()
 
 /// One CSV row per scored prediction. Timing (predict + observe, latency and throughput) is
 /// denormalised onto every row (cell-level, constant per trace x predictor) so the notebook needs
-/// a single results.csv with no join. benchmark.py routes ROW lines into it. Trace and predictor
-/// names contain no commas, so a plain split parses cleanly downstream.
+/// a single results.csv with no join. benchmark.py routes ROW lines into it. Predictor names may
+/// contain commas (e.g. "MLP(win=16,h=16)"); the Python parser uses rsplit(",", 9) to split from
+/// the right by the known count of trailing numeric fields, keeping the predictor name intact.
 void printRows(
     const std::string& traceName,
     const std::string& predictorName,

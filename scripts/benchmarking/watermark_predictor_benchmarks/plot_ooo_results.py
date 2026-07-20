@@ -49,6 +49,7 @@ PRED_SHORT = {
 }
 
 TRACE_ORDER = [
+    "ConstantRate(2.0) clean",
     "ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)",
     "ConstantRate(2.0) + heavy out-of-order (p=0.50 maxDelay=8)",
     "Fluctuating clean",
@@ -57,6 +58,7 @@ TRACE_ORDER = [
     "Fluctuating + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)",
 ]
 TRACE_SHORT = {
+    "ConstantRate(2.0) clean":                                           "Const\nclean",
     "ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)":        "Const\n+mild OOO",
     "ConstantRate(2.0) + heavy out-of-order (p=0.50 maxDelay=8)":       "Const\n+heavy OOO",
     "Fluctuating clean":                                                  "Fluct\nclean",
@@ -325,12 +327,12 @@ def fig_timing(cell: pd.DataFrame, out: Path) -> None:
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.6))
 
-    # scatter: accuracy (MdAE) vs observe throughput
+    # scatter: accuracy (MdAE) vs observe throughput — average mdae over all const-rate traces
     ax = axes[0]
-    for _, row in const.drop_duplicates("predictor").iterrows():
+    const_avg = const.groupby("predictor", sort=False)[["mdae","observe_ops_per_sec"]].mean().reset_index()
+    for _, row in const_avg.iterrows():
         p = row["predictor"]
-        t_row = timing[timing["predictor"] == p].iloc[0]
-        ax.scatter(t_row["observe_ops_per_sec"], row["mdae"],
+        ax.scatter(row["observe_ops_per_sec"], row["mdae"],
                    color=PALETTE[p], marker=MARKERS[p], s=80, zorder=3,
                    label=PRED_SHORT[p])
     ax.set_xscale("log")
