@@ -49,6 +49,11 @@ SpillingTimeBasedSliceStore::SpillingTimeBasedSliceStore(
     , buffers(buffers_)
     , serializer(serializer_)
 {
+    wallClockNow = []
+    {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        return Timestamp{static_cast<Timestamp::Underlying>(ms)};
+    };
 }
 
 SpillingTimeBasedSliceStore::~SpillingTimeBasedSliceStore()
@@ -57,6 +62,11 @@ SpillingTimeBasedSliceStore::~SpillingTimeBasedSliceStore()
     {
         backend->waitForCompletion(std::nullopt);
     }
+}
+
+void SpillingTimeBasedSliceStore::setWallClockSourceForTesting(std::function<Timestamp()> clock)
+{
+    wallClockNow = std::move(clock);
 }
 
 std::vector<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getSlicesOrCreate(
@@ -145,7 +155,7 @@ std::optional<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getSliceBySli
 
 void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGlobalWaterMark)
 {
-    spillPolicy->observe(newGlobalWaterMark, newGlobalWaterMark);
+    spillPolicy->observe(newGlobalWaterMark, wallClockNow());
     const double pressure = sensor->sample();
 
     /// Snapshot live slices from our weak tracking map. We never call the inner store's

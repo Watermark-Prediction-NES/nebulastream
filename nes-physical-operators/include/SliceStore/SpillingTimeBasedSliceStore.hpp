@@ -82,6 +82,10 @@ public:
     /// Test-only: returns the number of currently-spilled slices.
     [[nodiscard]] std::size_t numSpilledSlices() const noexcept;
 
+    /// Override the wall-clock source (default: steady_clock ms). Only for tests, to make the
+    /// predictor-driven preemptive-create path deterministic.
+    void setWallClockSourceForTesting(std::function<Timestamp()> clock);
+
 private:
     enum class HandleState : uint8_t
     {
@@ -118,6 +122,10 @@ private:
     /// Decorator-side weak tracking of slices we have observed via getSlicesOrCreate. Used during
     /// GC ticks to iterate without invoking the inner store's destructive getAllNonTriggeredSlices.
     folly::Synchronized<std::unordered_map<Timestamp::Underlying, std::weak_ptr<Slice>>> observedSlices;
+
+    /// Wall-clock source for predictor observations + the create-horizon deadline. steady_clock ms by
+    /// default; overridable in tests via setWallClockSourceForTesting.
+    std::function<Timestamp()> wallClockNow;
 };
 
 }
