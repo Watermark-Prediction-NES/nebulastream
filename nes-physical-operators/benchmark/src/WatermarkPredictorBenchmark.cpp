@@ -223,12 +223,40 @@ std::vector<PredictionSample> runBenchmark(
     return samples;
 }
 
-/// The distinct clean scenario shapes. Defined once so buildExperiments() and printTraces() agree.
-/// Each is long enough past the warm-up boundary that the largest horizon still resolves against the
-/// truth trace for most eval ticks.
+/// Concatenates `cycles` copies of `cycle` into one long phase list. Lets a fluctuating-rate trace
+/// be described by its repeating regime once and then stretched to any length, so the online
+/// predictors are updated with a *varying* rate throughout warmup and scoring rather than a constant
+/// one that offers nothing to keep adapting to.
+std::vector<Phase> repeatCycle(const std::vector<Phase>& cycle, std::size_t cycles)
+{
+    std::vector<Phase> out;
+    out.reserve(cycle.size() * cycles);
+    for (std::size_t c = 0; c < cycles; ++c)
+    {
+        out.insert(out.end(), cycle.begin(), cycle.end());
+    }
+    return out;
+}
+
+/// The distinct scenario shapes. Defined once so buildExperiments() and printTraces() agree. Each is
+/// long enough past the warm-up boundary that the largest horizon still resolves against the truth
+/// trace for most eval ticks.
 struct BaseTraces
 {
-    PiecewiseConstantTraceSource constantFast{{{300, 100, 50}}};
+    /// Stationary control: one constant rate (2.0), long enough that the rolling eval has many
+    /// post-warmup ticks. With no rate change to track, the reorder noise is the only thing the
+    /// predictor has to cope with -- isolates the out-of-order effect on a steady stream.
+    PiecewiseConstantTraceSource constantFast{{{1000, 100, 50}}};
+
+    /// Fluctuating rate: a 5-phase cycle (rates 2.0, 5.0, 1.0, stall(0), 3.0) repeated six times, so
+    /// the watermark rate keeps changing for the whole run (30 regime boundaries). Wall-clock
+    /// advances uniformly (wallStep 50 everywhere); only the event-time step -- i.e. the rate the
+    /// predictors estimate -- varies. This is the trace that actually exercises online adaptation:
+    /// paired with a warmup that spans several cycles, the ML predictors reach scoring already
+    /// trained on the full rate repertoire and must keep adapting through it (the short single-
+    /// transition traces below never gave them sustained fluctuation to learn from).
+    PiecewiseConstantTraceSource fluctuating{
+        repeatCycle({{100, 100, 50}, {100, 250, 50}, {100, 50, 50}, {100, 0, 50}, {100, 150, 50}}, 6)};
 
     /// Stall: rate 2.0, then the watermark holds flat (eventStep 0) while wall-clock keeps advancing,
     /// then resumes at 2.0. Warm-up ends at the stall onset so the rolling eval spans the whole stall.
@@ -246,10 +274,11 @@ std::vector<Experiment> buildExperiments()
     const auto& constantFast = base.constantFast;
     const auto& stall = base.stall;
     const auto& catchUp = base.catchUp;
+    const auto& fluctuating = base.fluctuating;
 
-    /// Rolling eval scores after every post-warm-up sample, so a single experiment per scenario now
-    /// yields the whole error-vs-time curve (no more +N prefix sweeps). Near / mid / far horizons keep
-    /// look-ahead sensitivity as its own axis. Warm-up ends at the regime onset for the event traces.
+    /// Near / mid / far look-ahead, in watermark (event-time) units -- NOT sample counts. All three
+    /// stay far below each trace's event-time span, so they resolve against the truth for essentially
+    /// the whole rolling eval.
     const std::vector<uint64_t> horizons{500, 2000, 5000};
 
     std::vector<Experiment> experiments;
@@ -260,16 +289,16 @@ std::vector<Experiment> buildExperiments()
     experiments.push_back(makeCleanExperiment("CatchUp(2.0->8.0) clean", catchUp, 100, horizons));
 
     /// Gaussian jitter, no extra-late spikes.
-    const GaussianNoiseModel mildJitter{{.wallClockStddev = 10.0, .seed = 1}};
-    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) mild jitter (sd=10)", constantFast, mildJitter, 100, horizons));
+    const GaussianNoiseModel baselineMildJitter{{.wallClockStddev = 10.0, .seed = 1}};
+    experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) mild jitter (sd=10)", constantFast, baselineMildJitter, 100, horizons));
     const GaussianNoiseModel heavyJitter{{.wallClockStddev = 30.0, .seed = 2}};
     experiments.push_back(makeNoisyExperiment("ConstantRate(2.0) heavy jitter (sd=30)", constantFast, heavyJitter, 100, horizons));
 
     /// Same jitter applied to the event traces: the stall / catch-up transitions must now be tracked
     /// through noisy arrivals (the clean versions above isolate the regime change itself).
-    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter (sd=10)", stall, mildJitter, 100, horizons));
+    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter (sd=10)", stall, baselineMildJitter, 100, horizons));
     experiments.push_back(makeNoisyExperiment("Stall(2.0->0) heavy jitter (sd=30)", stall, heavyJitter, 100, horizons));
-    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter (sd=10)", catchUp, mildJitter, 100, horizons));
+    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter (sd=10)", catchUp, baselineMildJitter, 100, horizons));
     experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) heavy jitter (sd=30)", catchUp, heavyJitter, 100, horizons));
 
     /// Trained through the transition: warmup extends partway into the regime change itself (mid the
@@ -280,8 +309,8 @@ std::vector<Experiment> buildExperiments()
     /// [100, 150) -- both warmup values below land halfway through.
     experiments.push_back(makeCleanExperiment("Stall(2.0->0) clean warmup-mid-stall", stall, 150, horizons));
     experiments.push_back(makeCleanExperiment("CatchUp(2.0->8.0) clean warmup-mid-stall", catchUp, 125, horizons));
-    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter warmup-mid-stall", stall, mildJitter, 150, horizons));
-    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter warmup-mid-stall", catchUp, mildJitter, 125, horizons));
+    experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter warmup-mid-stall", stall, baselineMildJitter, 150, horizons));
+    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter warmup-mid-stall", catchUp, baselineMildJitter, 125, horizons));
 
     /// Stragglers: spike distribution fixed (mean=400, sd=100); sweep over late-fraction.
     const GaussianNoiseModel stragglersMild{
@@ -301,29 +330,42 @@ std::vector<Experiment> buildExperiments()
             makeNoisyExperiment("ConstantRate(2.0) + " + pctLabel + "% heavy stragglers", constantFast, sweep, 100, horizons));
     }
 
-    /// Out-of-order tuples: watermark VALUES arrive out of sequence (bounded local reordering) while
-    /// wall-clock delivery time keeps advancing normally -- a genuinely different failure mode from
-    /// the wall-clock jitter/lateness above, which never regresses the watermark itself. Exercises
-    /// the watermark-regression guard every predictor's observe() has to reject on (see
+    /// --- Out-of-order arrival: the only active experiment set ---
+    /// Watermark VALUES arrive out of sequence (bounded local reordering) while wall-clock delivery
+    /// time keeps advancing normally -- a genuinely different failure mode from wall-clock
+    /// jitter/lateness, which never regresses the watermark value itself. Exercises the
+    /// watermark-regression guard every predictor's observe() has to reject on (see
     /// EwmaWatermarkPredictor::observe() etc.: `watermarkTs < lastWatermark`).
     const OutOfOrderNoiseModel mildReorder{{.reorderProbability = 0.20, .maxDelay = 3, .seed = 8}};
-    experiments.push_back(
-        makeNoisyExperiment("ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)", constantFast, mildReorder, 100, horizons));
-
     const OutOfOrderNoiseModel heavyReorder{{.reorderProbability = 0.50, .maxDelay = 8, .seed = 9}};
-    experiments.push_back(
-        makeNoisyExperiment("ConstantRate(2.0) + heavy out-of-order (p=0.50 maxDelay=8)", constantFast, heavyReorder, 100, horizons));
 
+    /// Stationary-rate control: constant 2.0 over a long trace (warmup 200, ~800 scored ticks), so
+    /// the reorder noise is the only thing the predictor has to cope with.
     experiments.push_back(
-        makeNoisyExperiment("Stall(2.0->0) + mild out-of-order (p=0.20 maxDelay=3)", stall, mildReorder, 100, horizons));
+        makeNoisyExperiment("ConstantRate(2.0) + mild out-of-order (p=0.20 maxDelay=3)", constantFast, mildReorder, 200, horizons));
     experiments.push_back(
-        makeNoisyExperiment("CatchUp(2.0->8.0) + mild out-of-order (p=0.20 maxDelay=3)", catchUp, mildReorder, 100, horizons));
+        makeNoisyExperiment("ConstantRate(2.0) + heavy out-of-order (p=0.50 maxDelay=8)", constantFast, heavyReorder, 200, horizons));
+
+    /// Clean fluctuating reference: the same long, many-regime trace with no reorder, so the reorder
+    /// penalty below can be read against a same-trace baseline that already exercises online
+    /// adaptation (warmup 1000 spans two full 500-tick cycles).
+    experiments.push_back(makeCleanExperiment("Fluctuating clean", fluctuating, 1000, horizons));
+
+    /// Fluctuating rate + reorder: the rate keeps changing across the whole run and the warmup spans
+    /// several cycles, so the online (ML) predictors reach scoring already trained on a varying
+    /// regime and must keep adapting -- now through out-of-order arrivals as well. This is the case
+    /// the short single-transition traces could not exercise.
+    experiments.push_back(
+        makeNoisyExperiment("Fluctuating + mild out-of-order (p=0.20 maxDelay=3)", fluctuating, mildReorder, 1000, horizons));
+    experiments.push_back(
+        makeNoisyExperiment("Fluctuating + heavy out-of-order (p=0.50 maxDelay=8)", fluctuating, heavyReorder, 1000, horizons));
 
     /// Realistic combination: jitter and reordering are independent axes in practice (both stem from
     /// network/scheduling variance), so a stream can exhibit both at once.
+    const GaussianNoiseModel mildJitter{{.wallClockStddev = 10.0, .seed = 1}};
     const CompositeNoiseModel jitterAndReorder{{mildJitter, mildReorder}};
     experiments.push_back(makeNoisyExperiment(
-        "ConstantRate(2.0) + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)", constantFast, jitterAndReorder, 100, horizons));
+        "Fluctuating + jitter(sd=10) + out-of-order(p=0.20 maxDelay=3)", fluctuating, jitterAndReorder, 1000, horizons));
 
     return experiments;
 }
@@ -361,8 +403,7 @@ void printTraces()
         }
     };
     dump("ConstantRate(2.0)", base.constantFast);
-    dump("Stall(2.0->0)", base.stall);
-    dump("CatchUp(2.0->8.0)", base.catchUp);
+    dump("Fluctuating", base.fluctuating);
 }
 
 /// One CSV row per scored prediction. Timing (predict + observe, latency and throughput) is
