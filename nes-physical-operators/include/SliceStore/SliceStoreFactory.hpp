@@ -37,7 +37,7 @@ public:
     /// when `evictionConfig.enabled`. This is the path used by `WindowBasedOperatorHandler::start()`,
     /// where the buffer provider only becomes available at runtime. `serializerName` is the serializer
     /// registered for the Slice subclass this store holds (set on the handler in the lowering); it is
-    /// resolved once here. If spill is disabled, the buffer provider is null, or no serializer is
+    /// resolved once here. If eviction is disabled, the buffer provider is null, or no serializer is
     /// registered under `serializerName`, the inner store is returned unchanged with a `NES_WARN`.
     [[nodiscard]] static std::unique_ptr<WindowSlicesStoreInterface> wrapWithEviction(
         std::unique_ptr<WindowSlicesStoreInterface> inner,

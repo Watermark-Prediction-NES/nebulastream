@@ -20,15 +20,22 @@
 
 namespace NES
 {
-
-/// POD configuration for the spill subsystem. Engine-wide (mirrors SliceCacheConfiguration).
+/// POD configuration for slice eviction: moving a slice off the resident tier, whether by compressing it
+/// in RAM, writing it to disk, or both. Engine-wide (mirrors SliceCacheConfiguration).
+/// A plain struct rather than a BaseConfiguration because this value travels per query through the SQL
+/// binder and LogicalPlan (which is copied on every optimizer rewrite): it needs cheap copies, designated
+/// init, and no polymorphic base. SliceEvictionWorkerConfiguration mirrors these fields as CLI/YAML
+/// options and converts them here — see the comment there for why that mirror cannot be collapsed.
 /// `enabled == false` short-circuits the SliceStoreFactory back to the plain DefaultTimeBasedSliceStore,
-/// so the spill subsystem has zero runtime cost when unused.
+/// so eviction has zero runtime cost when unused.
 struct SliceEvictionConfiguration
 {
     bool enabled{false};
 
-    /// Name registered with SpillPolicyRegistry. Default: NeverSpillPolicy (no-op).
+    /// Name registered with SpillPolicyRegistry. Recognised values: "never" (no-op, the default),
+    /// "reactive" (evict above highMemoryBound), "always" (evict every tick, bound ignored),
+    /// "predictive" (reactive, but keep a slice resident when the predictor says its trigger is near),
+    /// "tiered" (pick a tier per slice from the predicted time-to-trigger).
     std::string policyName{"never"};
 
     /// Name registered with StorageBackendRegistry.
@@ -44,12 +51,33 @@ struct SliceEvictionConfiguration
     double highMemoryBound{0.85};
 
     /// Predictive-policy horizon — how many ms ahead the predictor must say the slice will trigger
-    /// before the policy decides to keep it resident.
+    /// before the policy decides to keep it resident. Doubles as the tiered policy's "near" band.
     std::chrono::milliseconds predictionHorizon{50};
+
+    /// Tiered-policy bands, in ms of predicted time-to-trigger. Must be non-decreasing with
+    /// `predictionHorizon`; TieredSpillPolicy clamps and warns if they are not. Ignored by other policies.
+    /// Inside `promoteHorizon` a spilled slice is restored eagerly, before the probe asks for it.
+    std::chrono::milliseconds promoteHorizon{20};
+    std::chrono::milliseconds compressRamHorizon{200};
+    std::chrono::milliseconds compressDiskHorizon{1000};
 
     /// Watermark predictor selection for `policyName == "predictive"`. Recognised values: "ewma",
     /// "kalman", "robustkalman". Other policies ignore this field.
     std::string predictorName{"ewma"};
+
+    /// Compress evicted slice bytes (zstd). Orthogonal to `storageBackendName` under every policy, but
+    /// the two express it differently:
+    ///   - never/reactive/predictive: wraps the configured backend, giving four modes --
+    ///     in-memory + compress == compress without spilling; local-file without compress == spill
+    ///     without compressing.
+    ///   - tiered: brings the CompressedRam / CompressedDisk rungs into existence. With `compress`
+    ///     false the ladder degrades to Resident <-> Disk, so prediction still decides WHEN a slice is
+    ///     evicted but nothing is compressed. The tiered Disk rung is always raw, so it never
+    ///     duplicates CompressedDisk.
+    bool compress{false};
+
+    /// zstd compression level (1–22) used when `compress` is true.
+    uint32_t compressionLevel{3};
 };
 
 }

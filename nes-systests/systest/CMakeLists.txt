@@ -195,7 +195,12 @@ if (NOT CODE_COVERAGE)
     ## preallocPredictive = preemptive slice creation WITH a watermark predictor driving a wall-clock
     ## horizon. The `none` baseline is the no-preallocation case, so the three together cover join +
     ## aggregation with and without predictive preemptive creation.
-    set(spillVariants none predictiveSpill alwaysSpill preallocOnly preallocPredictive)
+    ## compressOnly = one storage target for every slice, compressed. tieredSpill = a target chosen per
+    ## slice from the predicted time-to-trigger, so the two together isolate the effect of tiering.
+    ## Every registered SpillPolicy gets a variant named after it -- neverSpill, reactiveSpill,
+    ## predictiveSpill, alwaysSpill, tieredSpill -- so adding a policy without adding coverage is visible
+    ## here. Keep that property when adding one.
+    set(spillVariants none neverSpill reactiveSpill predictiveSpill alwaysSpill preallocOnly preallocPredictive compressOnly tieredSpill)
     set(flags_none "")
     # predictive spill + preemptive slice creation + slice reuse pool
     set(flags_predictiveSpill
@@ -204,11 +209,24 @@ if (NOT CODE_COVERAGE)
             --worker.default_query_execution.eviction.predictor=ewma
             --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
             --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
-    # always spill: reactive policy with a zero high-memory bound spills on every GC tick
+    # never: the spill decorator IS constructed but the policy declines to evict anything. Distinct from
+    # the `none` baseline, which leaves spill.enabled=false so SliceStoreFactory returns the plain store
+    # and the decorator never exists. This is the one that catches a decorator that is not transparent,
+    # and it covers the DEFAULT policy.
+    set(flags_neverSpill
+            --worker.default_query_execution.eviction.enabled=true
+            --worker.default_query_execution.eviction.policy=NEVER)
+    # reactive: the pressure gate at its default bound. Whether it actually evicts depends on the pool
+    # occupancy the query reaches, which is the point -- this is the only variant driven by real pressure
+    # rather than a forced bound.
+    set(flags_reactiveSpill
+            --worker.default_query_execution.eviction.enabled=true
+            --worker.default_query_execution.eviction.policy=REACTIVE)
+    # always spill: the ALWAYS policy has no pressure gate, so every slice is evicted on every GC tick.
+    # Compression is left off and the backend defaults, so this is spill-only.
     set(flags_alwaysSpill
             --worker.default_query_execution.eviction.enabled=true
-            --worker.default_query_execution.eviction.policy=REACTIVE
-            --worker.default_query_execution.eviction.high_memory_bound=0.0)
+            --worker.default_query_execution.eviction.policy=ALWAYS)
     # only preemptive slice creation + slice reuse pool, no spilling (static event-time lookahead)
     set(flags_preallocOnly
             --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
@@ -219,6 +237,36 @@ if (NOT CODE_COVERAGE)
             --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms=1000
             --worker.default_query_execution.slice_preallocation.preemptive_predictor=ewma
             --worker.default_query_execution.slice_preallocation.recycle_pool_size=16)
+    # compress only: always-evict (reactive, zero bound) into the in-memory backend with zstd compression.
+    # Exercises the compress -> store -> restore -> decompress path on every GC tick; a correctness no-op,
+    # so results must match the baseline. In-memory (no disk) avoids the shared spill-dir file collisions
+    # that a local-file backend would hit when these variants run in parallel. The compress+spill (local-file)
+    # mode is left to manual verification for that reason.
+    set(flags_compressOnly
+            --worker.default_query_execution.eviction.enabled=true
+            --worker.default_query_execution.eviction.policy=ALWAYS
+            --worker.default_query_execution.eviction.backend=in-memory
+            --worker.default_query_execution.eviction.compress=true)
+    # tiered: pick a tier per slice from the predicted time-to-trigger instead of a single spill target.
+    # A zero high-memory bound opens the pressure gate on every GC tick so the ladder actually runs, and the
+    # horizons are spread far enough apart that a slice walks Resident -> CompressedRam -> CompressedDisk ->
+    # Disk as its predicted trigger recedes, then gets promoted back inside promote_horizon_ms. Correctness
+    # no-op, so results must match the baseline. in-memory keeps every tier off disk (CompressedDisk follows
+    # spill.backend), which is what lets this run in parallel with the other variants -- same reasoning as
+    # compressOnly above. The local-file hierarchy is left to manual verification for that reason.
+    # spill.compress is what brings the two compressed rungs into existence; without it the ladder
+    # degrades to Resident <-> Disk and this variant would stop covering the compressed tiers entirely.
+    set(flags_tieredSpill
+            --worker.default_query_execution.eviction.enabled=true
+            --worker.default_query_execution.eviction.policy=TIERED
+            --worker.default_query_execution.eviction.predictor=ewma
+            --worker.default_query_execution.eviction.high_memory_bound=0.0
+            --worker.default_query_execution.eviction.backend=in-memory
+            --worker.default_query_execution.eviction.compress=true
+            --worker.default_query_execution.eviction.promote_horizon_ms=20
+            --worker.default_query_execution.eviction.prediction_horizon_ms=50
+            --worker.default_query_execution.eviction.compress_ram_horizon_ms=200
+            --worker.default_query_execution.eviction.compress_disk_horizon_ms=1000)
 
     foreach (spillVariant IN LISTS spillVariants)
         set(variantSuffix "_${spillVariant}")

@@ -13,13 +13,17 @@
 add_source_files(nes-physical-operators
         InMemoryStorageBackend.cpp
         LocalFileStorageBackend.cpp
+        CompressionStorageBackend.cpp
         NLJSliceStateSerializer.cpp
         HJSliceStateSerializer.cpp
         StubSliceSerializers.cpp
 )
 
-# Both names back the same PressureSpillPolicy: "reactive" = no predictor, "predictive" = predictor-refined.
-# The PREDICTIVE registrar lives in the same .cpp, so it adds no extra source.
+# Three names back the same PressureSpillPolicy: "reactive" = no predictor, "predictive" =
+# predictor-refined, "always" = reactive with a zero bound, i.e. no pressure gate at all.
+# Their registrars all live in the same .cpp, so they add no extra sources.
 add_plugin(REACTIVE SpillPolicy PressureSpillPolicy.cpp)
 add_plugin(PREDICTIVE SpillPolicy)
+add_plugin(ALWAYS SpillPolicy)
 add_plugin(NEVER SpillPolicy NeverSpillPolicy.cpp)
+add_plugin(TIERED SpillPolicy TieredSpillPolicy.cpp)

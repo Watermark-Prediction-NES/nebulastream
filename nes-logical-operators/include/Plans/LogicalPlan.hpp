@@ -58,7 +58,7 @@ public:
     void setOriginalSql(const std::string& sql);
     void setQueryId(QueryId id);
 
-    /// Per-query spill override carried with the plan. Populated by the SQL binder from a
+    /// Per-query slice-eviction override carried with the plan. Populated by the SQL binder from a
     /// `SET (EVICTION.* AS ...)` clause; nullopt means "use engine defaults". Survives across
     /// optimizer + lowering boundaries.
     [[nodiscard]] const std::optional<SliceEvictionConfiguration>& getEvictionConfig() const noexcept { return evictionConfig; }

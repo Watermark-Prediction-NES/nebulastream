@@ -48,7 +48,8 @@ AggregationOperatorHandler::AggregationOperatorHandler(
     /// Aggregation does not yet support spill (AggregationSliceStateSerializer is a NotImplemented
     /// stub); pass a default-constructed SliceEvictionConfiguration with enabled=false. The serializer name is
     /// fixed here rather than via the lowering since spill is always disabled for this handler.
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), SliceEvictionConfiguration{}, "AggregationSlice")
+    : WindowBasedOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), SliceEvictionConfiguration{}, "AggregationSlice")
     , setupAlreadyCalled(false)
     , rollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})
     , maxNumberOfBuckets(maxNumberOfBuckets)

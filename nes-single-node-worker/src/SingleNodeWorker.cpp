@@ -148,11 +148,11 @@ std::expected<QueryId, Exception> SingleNodeWorker::startQuery(LogicalPlan plan)
             configuration.workerConfiguration.dumpQueryCompilationIR.getValue(), configuration.workerConfiguration.dumpGraph.getValue());
         auto request = std::make_unique<QueryCompilation::QueryCompilationRequest>(plan);
         request->dumpCompilationResult = dumpMode;
-        /// Lift per-query spill override off the plan onto the compilation request so it overlays
+        /// Lift the per-query eviction override off the plan onto the compilation request so it overlays
         /// the engine-default QueryExecutionConfiguration::evictionConfiguration.
-        if (const auto& spill = plan.getEvictionConfig(); spill.has_value())
+        if (const auto& eviction = plan.getEvictionConfig(); eviction.has_value())
         {
-            request->evictionOverride = *spill;
+            request->evictionOverride = *eviction;
         }
         auto result = compiler->compileQuery(std::move(request));
         INVARIANT(result, "expected successful query compilation or exception, but got nothing");

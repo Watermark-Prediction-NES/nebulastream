@@ -31,7 +31,12 @@ using SpillPolicyRegistryReturnType = std::unique_ptr<SpillPolicy>;
 struct SpillPolicyRegistryArguments
 {
     double highMemoryBound{0.85};
+    /// The "near" band: inside it a slice stays resident. Shared with the "predictive" policy.
     std::chrono::milliseconds horizon{50};
+    /// Tiered-policy bands. Must be non-decreasing with `horizon`; the policy clamps them if not.
+    std::chrono::milliseconds promoteHorizon{20};
+    std::chrono::milliseconds compressRamHorizon{200};
+    std::chrono::milliseconds compressDiskHorizon{1000};
     WatermarkPredictor* predictor{nullptr};
     /// Optional predictor name; consumed by the "predictive" PressureSpillPolicy to pick between built-in
     /// predictors ("ewma", "kalman", "robustkalman"). Ignored by policies that don't use a predictor.

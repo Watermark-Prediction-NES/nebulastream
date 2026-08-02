@@ -25,6 +25,8 @@ namespace NES
 {
 
 /// Pressure-driven spill policy. Spills a slice when sampled pressure is at/above `highBound`.
+/// Registered three times: "reactive" (configured bound, no predictor), "always" (bound forced to 0.0,
+/// so every slice is evicted on every tick) and "predictive" (configured bound, predictor-refined).
 ///
 /// Optionally refined by a watermark predictor: when a predictor is present and warm, a slice whose
 /// estimated trigger is within `horizon` is kept resident even under pressure, so the probe doesn't
@@ -42,7 +44,7 @@ public:
     /// Predictor-refined (predictive): consult the predictor within `horizon` before spilling.
     PressureSpillPolicy(double highBound, std::chrono::milliseconds horizon, std::string_view predictorName) noexcept;
 
-    [[nodiscard]] SpillDecision decide(const SliceSpillContext& ctx, double memoryPressure) const override;
+    [[nodiscard]] SliceTier decide(const SliceSpillContext& ctx, double memoryPressure) const override;
 
     void observe(Timestamp now, Timestamp globalWatermark) noexcept override;
 

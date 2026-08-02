@@ -22,6 +22,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 #include <SliceStore/Spill/SpillObjectKey.hpp>
 
 namespace NES
@@ -99,5 +100,42 @@ public:
     /// Block until every in-flight op completes (or only ops on `key`, if provided). Called from dtors and deleteState.
     virtual void waitForCompletion(std::optional<SpillObjectKey> key) = 0;
 };
+
+/// Streams object `key` from `src` to `dst`. Readers yield plain bytes and writers consume plain bytes,
+/// so this composes correctly through the compression decorator in either direction (compressed -> raw
+/// decompresses, raw -> compressed compresses). Used by the slice store to move a slice between tiers
+/// without materialising it: going through the serializer instead would round-trip the slice's pages
+/// through the buffer pool for no reason.
+///
+/// Does NOT remove the source object. The caller removes it only after every key of a handle has copied,
+/// so a partial failure leaves the slice readable from its old tier.
+[[nodiscard]] inline std::expected<void, IoError>
+copySpillObject(StorageBackend& src, StorageBackend& dst, const SpillObjectKey& key, std::size_t chunkBytes = 64UL * 1024)
+{
+    auto reader = src.openRead(key);
+    if (!reader.has_value())
+    {
+        return std::unexpected{reader.error()};
+    }
+    auto writer = dst.openWrite(key);
+    std::vector<std::byte> chunk(chunkBytes);
+    while (true)
+    {
+        auto read = (*reader)->readNext(std::span{chunk}).get();
+        if (!read.has_value())
+        {
+            return std::unexpected{read.error()};
+        }
+        if (read.value() == 0)
+        {
+            break;
+        }
+        if (auto written = writer->append(std::span{chunk}.first(read.value())).get(); !written.has_value())
+        {
+            return std::unexpected{written.error()};
+        }
+    }
+    return writer->close().get();
+}
 
 }

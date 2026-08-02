@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -40,18 +41,26 @@ namespace NES
 /// in-memory-only.
 ///
 /// Three-state handle tracking eliminates the double-spill race: each spilled slice's handle entry
-/// is either SpillInFlight (spill future pending) or Spilled (handle present). Resident slices have
+/// is either SpillInFlight (a move is running) or Spilled (handle present). Resident slices have
 /// no entry. The decorator skips slices in SpillInFlight during GC ticks.
+///
+/// Each entry also records WHICH tier the slice went to, so a restore reads back through the backend
+/// that actually holds the bytes. The policy names a target tier per GC tick and the store moves the
+/// slice if it differs from the current one, which is what makes demotion and eager promotion work.
 ///
 /// Restore on probe access is BLOCKING in v1. A future change can hand the restore future to the
 /// pipeline scheduler so the worker can run other tasks while the I/O is in flight.
 class SpillingTimeBasedSliceStore final : public WindowSlicesStoreInterface
 {
 public:
+    /// Backends indexed by SliceTier. Slot 0 (Resident) is always null; a null tier backend means that
+    /// tier is not wired for this query and the store will not move slices into it.
+    using TierBackends = std::array<std::shared_ptr<StorageBackend>, 4>;
+
     SpillingTimeBasedSliceStore(
         std::unique_ptr<WindowSlicesStoreInterface> inner,
         std::unique_ptr<SpillPolicy> policy,
-        std::shared_ptr<StorageBackend> backend,
+        TierBackends backends,
         std::unique_ptr<MemoryPressureSensor> sensor,
         AbstractBufferProvider& buffers,
         SliceStateSerializer& serializer);
@@ -82,30 +91,47 @@ public:
     /// Test-only: returns the number of currently-spilled slices.
     [[nodiscard]] std::size_t numSpilledSlices() const noexcept;
 
-private:
-    enum class HandleState : uint8_t
-    {
-        SpillInFlight,
-        Spilled,
-    };
+    /// Test-only: returns the tier a slice currently occupies.
+    [[nodiscard]] SliceTier tierOf(SliceEnd sliceEnd) const noexcept;
 
+    /// Test-only: overrides the wall-clock source, so a test can drive the predictor deterministically.
+    /// Mirrors DefaultTimeBasedSliceStore::setWallClockSourceForTesting.
+    void setWallClockSourceForTesting(std::function<Timestamp()> clock);
+
+private:
+    /// One entry per non-resident slice. The entry existing IS the "spilled" state; there is no
+    /// in-flight state because every transition runs to completion under the map's write lock.
     struct HandleEntry
     {
-        HandleState state{HandleState::SpillInFlight};
+        SliceTier tier{SliceTier::Disk};
         SpilledSliceHandle handle{};
     };
 
+    [[nodiscard]] StorageBackend* backendFor(SliceTier tier) const noexcept { return tierBackends[static_cast<std::size_t>(tier)].get(); }
+
+    /// Probe path: if `slice` is spilled, bring it back and drop its handle. Claims the entry under a
+    /// write lock before doing the I/O, so a concurrent GC tick cannot start a tier move on the same
+    /// slice while the restore is running.
+    void restoreIfSpilled(Slice& slice);
+
     /// Restore a spilled slice synchronously. Throws CannotDeserialize if the backend restore
     /// fails — a spilled slice we cannot read back is lost state.
-    void restoreSliceSynchronous(Slice& slice, const SpilledSliceHandle& handle);
+    void restoreSliceSynchronous(Slice& slice, const SpilledSliceHandle& handle, SliceTier from);
 
     /// Spill a slice synchronously. Returns the handle on success. Throws CannotSerialize if the
     /// backend spill itself fails.
-    SpilledSliceHandle spillSliceSynchronous(Slice& slice);
+    SpilledSliceHandle spillSliceSynchronous(Slice& slice, SliceTier to);
+
+    /// Move a slice between tiers. Resident->tier spills, tier->Resident restores, and tier->tier
+    /// copies the stored bytes across backends without materialising the slice.
+    void applyTierTransition(Slice& slice, Timestamp::Underlying sliceEndKey, SliceTier from, SliceTier to);
+
+    /// Best-effort delete of a handle's objects from one tier's backend. No-op for an unwired tier.
+    void removeHandleObjects(const SpilledSliceHandle& handle, SliceTier tier);
 
     std::unique_ptr<WindowSlicesStoreInterface> inner;
     std::unique_ptr<SpillPolicy> spillPolicy;
-    std::shared_ptr<StorageBackend> backend;
+    TierBackends tierBackends;
     std::unique_ptr<MemoryPressureSensor> sensor;
     AbstractBufferProvider& buffers;
     /// A store only ever holds one Slice subclass, so the serializer is resolved once at construction
@@ -118,6 +144,8 @@ private:
     /// Decorator-side weak tracking of slices we have observed via getSlicesOrCreate. Used during
     /// GC ticks to iterate without invoking the inner store's destructive getAllNonTriggeredSlices.
     folly::Synchronized<std::unordered_map<Timestamp::Underlying, std::weak_ptr<Slice>>> observedSlices;
+    /// Wall clock fed to the policy. Must be the same domain as WatermarkPredictor::predictWallClock.
+    std::function<Timestamp()> wallClockNow;
 };
 
 }

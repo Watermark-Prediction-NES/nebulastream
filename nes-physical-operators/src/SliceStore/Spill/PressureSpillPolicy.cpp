@@ -35,23 +35,27 @@ PressureSpillPolicy::PressureSpillPolicy(double highBound_, std::chrono::millise
 {
 }
 
-SpillDecision PressureSpillPolicy::decide(const SliceSpillContext& ctx, double memoryPressure) const
+SliceTier PressureSpillPolicy::decide(const SliceSpillContext& ctx, double memoryPressure) const
 {
+    /// This policy only ever moves a slice one way, Resident -> Disk. Its "keep" answer is therefore
+    /// ctx.currentTier, not Resident: an already-spilled slice must stay spilled until the probe pulls
+    /// it back, which is the behaviour this policy has always had.
+    ///
     /// Pressure guard: under-pressure cases short-circuit; the predictor is consulted only when memory is constrained.
     if (memoryPressure < highBound)
     {
-        return SpillDecision::Keep;
+        return ctx.currentTier;
     }
 
     /// No predictor, or one too cold to answer: pure-pressure behaviour — just spill.
     if (!predictor)
     {
-        return SpillDecision::Spill;
+        return SliceTier::Disk;
     }
     const Timestamp predictedTrigger = predictor->predictWallClock(ctx.sliceEnd);
     if (predictedTrigger.getRawValue() == Timestamp::INVALID_VALUE)
     {
-        return SpillDecision::Spill;
+        return SliceTier::Disk;
     }
 
     /// If the predicted trigger is further than `horizon` from now, spill. Otherwise keep the slice
@@ -60,14 +64,14 @@ SpillDecision PressureSpillPolicy::decide(const SliceSpillContext& ctx, double m
     const auto predRaw = predictedTrigger.getRawValue();
     if (predRaw <= nowRaw)
     {
-        return SpillDecision::Keep;
+        return ctx.currentTier;
     }
     const auto delta = predRaw - nowRaw;
     if (delta > static_cast<uint64_t>(horizon.count()))
     {
-        return SpillDecision::Spill;
+        return SliceTier::Disk;
     }
-    return SpillDecision::Keep;
+    return ctx.currentTier;
 }
 
 void PressureSpillPolicy::observe(Timestamp now, Timestamp globalWatermark) noexcept
@@ -93,6 +97,19 @@ SpillPolicyRegistryReturnType SpillPolicyGeneratedRegistrar::RegisterREACTIVESpi
 SpillPolicyRegistryReturnType SpillPolicyGeneratedRegistrar::RegisterPREDICTIVESpillPolicy(SpillPolicyRegistryArguments args)
 {
     return std::make_unique<PressureSpillPolicy>(args.highMemoryBound, args.horizon, args.predictorName);
+}
+
+/// "always" => evict every slice on every GC tick, whatever the pressure. A zero bound already means
+/// exactly that (sample() is clamped to [0, 1], so `pressure < 0.0` is never true), so this is the same
+/// class with the configured bound ignored rather than a policy of its own.
+///
+/// What the evicted slice costs is left to the orthogonal knobs: `compression.enabled` decides whether
+/// its bytes are compressed and `spill.backend` decides whether they leave RAM. always + compression +
+/// local-file is therefore the always-compress-and-spill baseline, and dropping either knob gives the
+/// always-spill-raw or always-compress-in-RAM variant of it.
+SpillPolicyRegistryReturnType SpillPolicyGeneratedRegistrar::RegisterALWAYSSpillPolicy(SpillPolicyRegistryArguments)
+{
+    return std::make_unique<PressureSpillPolicy>(0.0);
 }
 
 }

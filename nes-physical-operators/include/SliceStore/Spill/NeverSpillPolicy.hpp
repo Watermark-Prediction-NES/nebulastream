@@ -19,18 +19,15 @@
 namespace NES
 {
 
-/// Default policy: always returns Keep. Equivalent to "spill disabled" for any slice the decorator
-/// is wrapping. Used as the fallback when SliceEvictionConfiguration.enabled is true but no specific policy
-/// was selected, and as the default policy registered under name "never".
+/// Default policy: every slice stays where it is. Equivalent to "spill disabled" for any slice the
+/// decorator is wrapping. Used as the fallback when SliceEvictionConfiguration.enabled is true but no specific
+/// policy was selected, and as the default policy registered under name "never".
 class NeverSpillPolicy final : public SpillPolicy
 {
 public:
     NeverSpillPolicy() = default;
 
-    [[nodiscard]] SpillDecision decide(const SliceSpillContext& /*ctx*/, double /*memoryPressure*/) const override
-    {
-        return SpillDecision::Keep;
-    }
+    [[nodiscard]] SliceTier decide(const SliceSpillContext& ctx, double /*memoryPressure*/) const override { return ctx.currentTier; }
 };
 
 }

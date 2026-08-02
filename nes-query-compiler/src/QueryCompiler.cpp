@@ -31,12 +31,23 @@ namespace NES::QueryCompilation
 std::unique_ptr<CompiledQueryPlan> QueryCompiler::compileQuery(std::unique_ptr<QueryCompilationRequest> request)
 {
     auto lowerToCompiledQueryPlanPhase = LowerToCompiledQueryPlanPhase(request->dumpCompilationResult);
-    /// Materialise an effective configuration by overlaying the per-query spill override (if any)
-    /// onto the engine defaults. Cheap copy — QueryExecutionConfiguration is a POD-ish struct.
+    /// Materialise an effective configuration from the engine defaults. Cheap copy —
+    /// QueryExecutionConfiguration is a POD-ish struct.
     auto effectiveConf = defaultQueryExecution;
     effectiveConf.evictionConfiguration = effectiveConf.evictionWorkerConfiguration.toSliceEvictionConfiguration();
     if (request->evictionOverride.has_value())
     {
+        /// KNOWN LIMITATION: this REPLACES the whole POD, it does not overlay field by field. The binder
+        /// builds the override from SliceEvictionConfiguration's struct defaults (StatementBinder.cpp, the
+        /// `SliceEvictionConfiguration cfg{}` in the EVICTION branch) and only writes the keys the query
+        /// actually named, so naming ANY eviction key in a SET clause silently resets every worker-level
+        /// `eviction.*` setting to its hardcoded default.
+        ///
+        /// Deliberately not fixed here: a field-by-field merge needs the binder to emit a PARTIAL
+        /// override (std::optional per field, or a dedicated SliceEvictionConfigurationOverride type), and the
+        /// binder cannot simply seed from the worker config because it lives in nes-sql-parser, one
+        /// layer below this one. Until then, a query that sets any EVICTION.* key must set every key it
+        /// depends on — see nes-systests/operator/join/JoinEvictionTiered.test.
         effectiveConf.evictionConfiguration = *request->evictionOverride;
     }
     auto queryPlan = LowerToPhysicalOperators::apply(request->queryPlan, effectiveConf);

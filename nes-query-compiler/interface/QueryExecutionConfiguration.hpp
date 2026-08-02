@@ -27,8 +27,8 @@
 #include <Configurations/Validation/NumberValidation.hpp>
 #include <Util/ExecutionMode.hpp>
 #include <SliceCacheConfiguration.hpp>
-#include <SlicePreallocationConfiguration.hpp>
 #include <SliceEvictionWorkerConfiguration.hpp>
+#include <SlicePreallocationConfiguration.hpp>
 
 namespace NES
 {
@@ -81,14 +81,16 @@ public:
     SlicePreallocationConfiguration slicePreallocationConfiguration
         = {"slice_preallocation", "Preemptive slice creation + slice recycle pool (both opt-in, 0 = off)"};
 
-    /// Worker-level spill defaults (CLI/YAML), exposed under `spill.*`. The QueryCompiler converts
-    /// these to `evictionConfiguration` (below) as the engine default, which a per-query SET overrides.
+    /// Worker-level slice-eviction defaults (CLI/YAML), exposed under `eviction.*` — spilling and
+    /// compression both, since compressing a slice in RAM is just another eviction target. The
+    /// QueryCompiler converts these to `evictionConfiguration` (below) as the engine default, which a
+    /// per-query SET overrides.
     SliceEvictionWorkerConfiguration evictionWorkerConfiguration
-        = {"spill", "Engine-default spill subsystem settings (per-query SET (EVICTION.*) overrides these)"};
+        = {"eviction", "Engine-default slice eviction settings, spill and compression (per-query SET (EVICTION.*) overrides these)"};
 
-    /// Effective per-query spill config consumed by the lowering rules. Plain POD copy — not a
-    /// BaseOption — because spill flows per-query through the SQL binder and logical plan. Populated
-    /// by the QueryCompiler from evictionWorkerConfiguration or the per-query SET override.
+    /// Effective per-query eviction config consumed by the lowering rules. Plain POD copy — not a
+    /// BaseOption — because it flows per-query through the SQL binder and logical plan. Populated by
+    /// the QueryCompiler from evictionWorkerConfiguration or the per-query SET override.
     SliceEvictionConfiguration evictionConfiguration{};
 
 private:

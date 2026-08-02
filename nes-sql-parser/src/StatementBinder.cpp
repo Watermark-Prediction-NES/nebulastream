@@ -15,6 +15,7 @@
 #include <SQLQueryParser/StatementBinder.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -665,6 +666,14 @@ public:
                     static const auto EvictionIdentifier = Identifier::parse("EVICTION");
                     if (auto evictionIter = options.find(EvictionIdentifier); evictionIter != options.end())
                     {
+                        /// Seeded from SliceEvictionConfiguration's struct defaults, NOT from the worker's
+                        /// `eviction.*` settings — those live in nes-query-compiler,
+                        /// one layer above this one, and are not reachable from here. Since
+                        /// QueryCompiler::compileQuery assigns this POD wholesale rather than merging
+                        /// it field by field, any key the query does not name below silently falls
+                        /// back to the default instead of the worker's value. So a query that sets
+                        /// one EVICTION.* key must set every key it depends on. See the KNOWN LIMITATION
+                        /// comment in QueryCompiler.cpp for why this is not fixed here.
                         SliceEvictionConfiguration cfg{};
                         const auto readBool = [&](const std::string& key, bool& target)
                         {
@@ -717,11 +726,26 @@ public:
                                 }
                             }
                         };
+                        const auto readMillis = [&](const std::string& key, std::chrono::milliseconds& target)
+                        {
+                            double asDouble = static_cast<double>(target.count());
+                            readDouble(key, asDouble);
+                            if (asDouble < 0.0)
+                            {
+                                throw InvalidQuerySyntax("EVICTION." + key + " must not be negative");
+                            }
+                            target = std::chrono::milliseconds{static_cast<int64_t>(asDouble)};
+                        };
                         readBool("ENABLED", cfg.enabled);
+                        readBool("COMPRESS", cfg.compress);
                         readString("POLICY", cfg.policyName);
                         readString("BACKEND", cfg.storageBackendName);
                         readString("PREDICTOR", cfg.predictorName);
                         readDouble("HIGH_BOUND", cfg.highMemoryBound);
+                        readMillis("HORIZON_MS", cfg.predictionHorizon);
+                        readMillis("PROMOTE_HORIZON_MS", cfg.promoteHorizon);
+                        readMillis("COMPRESS_RAM_HORIZON_MS", cfg.compressRamHorizon);
+                        readMillis("COMPRESS_DISK_HORIZON_MS", cfg.compressDiskHorizon);
                         evictionCfg = cfg;
                     }
                 }

@@ -406,7 +406,7 @@ std::expected<QueryStatementResult, Exception> QueryStatementHandler::operator()
             distributedPlan.setQueryId(*statement.id);
         }
 
-        /// Propagate the per-query spill override to every local plan that will be dispatched to a
+        /// Propagate the per-query eviction override to every local plan that will be dispatched to a
         /// worker; the optimizer may rebuild the plan and drop the field along the way.
         if (statement.evictionConfig.has_value())
         {

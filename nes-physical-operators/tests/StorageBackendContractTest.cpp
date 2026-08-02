@@ -167,4 +167,69 @@ TEST_F(StorageBackendContractTest, KeysWithDifferentRolesAreIndependent)
     EXPECT_EQ(backend.bytesStored(rightKey), 1U);
 }
 
+namespace
+{
+std::vector<std::byte> pattern(std::size_t n)
+{
+    std::vector<std::byte> out(n);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        out[i] = static_cast<std::byte>(i % 251);
+    }
+    return out;
+}
+
+void writeObject(StorageBackend& backend, const SpillObjectKey& key, const std::vector<std::byte>& bytes)
+{
+    auto writer = backend.openWrite(key);
+    ASSERT_TRUE(writer->append(std::span<const std::byte>{bytes}).get().has_value());
+    ASSERT_TRUE(writer->close().get().has_value());
+}
+}
+
+TEST_F(StorageBackendContractTest, CopySpillObjectPreservesBytes)
+{
+    InMemoryStorageBackend source;
+    InMemoryStorageBackend destination;
+    const auto key = makeKey(100);
+    const auto bytes = pattern(1000);
+    writeObject(source, key, bytes);
+
+    ASSERT_TRUE(copySpillObject(source, destination, key).has_value());
+
+    auto reader = destination.openRead(key);
+    ASSERT_TRUE(reader.has_value());
+    EXPECT_EQ(readAll(**reader), bytes);
+    /// The source is deliberately left intact: the caller removes it only once every key has copied,
+    /// so a partial failure still leaves the slice readable from its old tier.
+    EXPECT_EQ(source.numStoredObjects(), 1U);
+}
+
+TEST_F(StorageBackendContractTest, CopySpillObjectSpansChunkBoundaries)
+{
+    InMemoryStorageBackend source;
+    InMemoryStorageBackend destination;
+    const auto key = makeKey(100);
+    /// Not a multiple of the chunk size, so the final read is a partial fill.
+    const auto bytes = pattern(2560 + 7);
+    writeObject(source, key, bytes);
+
+    ASSERT_TRUE(copySpillObject(source, destination, key, /*chunkBytes*/ 256).has_value());
+
+    auto reader = destination.openRead(key);
+    ASSERT_TRUE(reader.has_value());
+    EXPECT_EQ(readAll(**reader), bytes);
+}
+
+TEST_F(StorageBackendContractTest, CopySpillObjectMissingKeyFailsAndLeavesDestinationEmpty)
+{
+    InMemoryStorageBackend source;
+    InMemoryStorageBackend destination;
+
+    const auto result = copySpillObject(source, destination, makeKey(100));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, IoErrorCode::NotFound);
+    EXPECT_EQ(destination.numStoredObjects(), 0U);
+}
+
 }

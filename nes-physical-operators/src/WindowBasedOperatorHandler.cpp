@@ -74,8 +74,8 @@ void WindowBasedOperatorHandler::ensureSpillStoreInitialized(PipelineExecutionCo
             const auto bufferProvider = pipelineExecutionContext.getBufferManager();
             if (bufferProvider != nullptr)
             {
-                sliceAndWindowStore
-                    = SliceStoreFactory::wrapWithEviction(std::move(sliceAndWindowStore), evictionConfig, bufferProvider.get(), serializerName);
+                sliceAndWindowStore = SliceStoreFactory::wrapWithEviction(
+                    std::move(sliceAndWindowStore), evictionConfig, bufferProvider.get(), serializerName);
             }
             else
             {

@@ -34,6 +34,10 @@ struct StorageBackendArgs
 {
     std::string spillDirectory{"/tmp/nes-spill"};
     uint32_t ioThreads{4};
+    /// Backend the "compression" decorator wraps. Ignored by the in-memory / local-file factories.
+    std::string innerBackendName{"in-memory"};
+    /// zstd level for the "compression" decorator. Ignored by other backends.
+    uint32_t compressionLevel{3};
 };
 
 class StorageBackendRegistry
@@ -61,12 +65,19 @@ public:
 
     [[nodiscard]] std::shared_ptr<StorageBackend> create(std::string_view name, const StorageBackendArgs& args) const
     {
-        std::lock_guard guard{mutex};
-        if (const auto it = factories.find(toUpper(std::string{name})); it != factories.end())
+        Factory factory;
         {
-            return it->second(args);
+            std::lock_guard guard{mutex};
+            const auto it = factories.find(toUpper(std::string{name}));
+            if (it == factories.end())
+            {
+                return nullptr;
+            }
+            factory = it->second;
         }
-        return nullptr;
+        /// Invoke the factory WITHOUT holding the lock: a decorator factory (e.g. "compression")
+        /// re-enters create() to build its inner backend, which would self-deadlock on this mutex.
+        return factory(args);
     }
 
     [[nodiscard]] std::vector<std::string> registeredNames() const
