@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Spilling end-to-end benchmark orchestrator.
+"""Spilling + compression end-to-end benchmark orchestrator.
 
 Reads parameters from `config.py`, enumerates the cartesian product of every knob, and runs
 each cell as a fresh worker invocation. One row per cell lands in `results/<run-id>/results.csv`.
@@ -24,7 +24,7 @@ CLI:
     --skip-build      Skip cmake configure/build + cargo build (use existing binaries).
     --dry-matrix      Render every (cell × query) topology + SQL and exit. No processes.
     --only=K=V,K=V    Filter the matrix to a single cell. Keys: threads, buffer_size,
-                      no_buffers, spill, var_size, predictor, rate.
+                      total_memory, spill, var_size, predictor, rate.
 """
 
 from __future__ import annotations
@@ -56,8 +56,11 @@ RESULT_COLS = [
     "cell_slug",
     "threads",
     "operator_buffer_size",
-    "no_buffers",
+    "total_memory",
     "spill_variant",
+    "spill_policy",
+    "spill_backend",
+    "compress",
     "predictor",
     "var_sized_bytes",
     "ingestion_rate",
@@ -220,30 +223,50 @@ def parse_argv(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def expand_spill_variants() -> Iterable[dict]:
-    """Each entry × every PREDICTOR_VARIANT when policy == 'predictive'. Otherwise pass through.
+### The policies that consult a WatermarkPredictor, and so have to be swept over PREDICTOR_VARIANTS.
+PREDICTOR_POLICIES = ("predictive", "tiered")
 
-    Adds 'predictor' key (always present) and 'tag' (cell-slug-safe short name).
+
+def expand_spill_variants() -> Iterable[dict]:
+    """Each entry × every PREDICTOR_VARIANT when its policy uses a predictor. Otherwise pass through.
+
+    Every yielded dict is layered over cfg.SPILL_DEFAULTS, so query.sql.jinja (StrictUndefined) can
+    reference any spill key unconditionally and config entries only name what they change. Adds
+    'predictor' (always present) and 'tag' (cell-slug-safe short name).
     """
     for v in cfg.SPILL_VARIANTS:
-        if v.get("policy") == "predictive":
+        if v.get("policy") in PREDICTOR_POLICIES:
             for p in cfg.PREDICTOR_VARIANTS:
-                merged = dict(v)
+                merged = {**cfg.SPILL_DEFAULTS, **v}
                 merged["predictor"] = p
                 merged["tag"] = f"{v['name']}-{p}"
                 yield merged
         else:
-            merged = dict(v)
+            merged = {**cfg.SPILL_DEFAULTS, **v}
             merged["predictor"] = ""
             merged["tag"] = v["name"]
             yield merged
+
+
+def horizons_for(slide_ms: int) -> dict:
+    """Scale cfg.HORIZON_FRACTIONS by a window's slide, clamped to at least 1 ms.
+
+    Rounding two adjacent fractions to the same millisecond would collapse a rung silently, so the
+    result is forced non-decreasing here rather than left to TieredSpillPolicy's constructor clamp.
+    """
+    out: dict = {}
+    floor = 1
+    for key, fraction in cfg.HORIZON_FRACTIONS.items():
+        floor = max(floor, int(round(slide_ms * fraction)))
+        out[key] = floor
+    return out
 
 
 @dataclass(frozen=True)
 class Cell:
     threads: int
     buf_size: int
-    no_buffers: int
+    total_memory: int
     spill: tuple  ### Hashable view of the spill dict for matrix-product purposes
     var_size: int
     rate: int  ### Ingestion rate in tuples/sec per source; 0 = unbounded.
@@ -256,14 +279,14 @@ class Cell:
     def slug(self) -> str:
         tag = self.spill_dict["tag"]
         rate = "inf" if self.rate == 0 else str(self.rate)
-        return f"t{self.threads}_bs{self.buf_size}_nb{self.no_buffers}_{tag}_v{self.var_size}_r{rate}"
+        return f"t{self.threads}_bs{self.buf_size}_mem{self.total_memory}_{tag}_v{self.var_size}_r{rate}"
 
 
 def matrix() -> Iterator[Cell]:
-    for threads, buf_size, no_buffers, spill, var_size, rate in itertools.product(
+    for threads, buf_size, total_memory, spill, var_size, rate in itertools.product(
         cfg.NUMBER_OF_WORKER_THREADS,
         cfg.OPERATOR_BUFFER_SIZE,
-        cfg.NUMBER_OF_BUFFERS,
+        cfg.TOTAL_MEMORY,
         list(expand_spill_variants()),
         cfg.VAR_SIZED_BYTES,
         cfg.INGESTION_RATES,
@@ -271,7 +294,7 @@ def matrix() -> Iterator[Cell]:
         yield Cell(
             threads=threads,
             buf_size=buf_size,
-            no_buffers=no_buffers,
+            total_memory=total_memory,
             spill=tuple(sorted(spill.items())),
             var_size=var_size,
             rate=rate,
@@ -290,7 +313,7 @@ def apply_only_filter(cells: Iterable[Cell], only: str | None) -> Iterator[Cell]
             return False
         if "buffer_size" in wanted and str(c.buf_size) != wanted["buffer_size"]:
             return False
-        if "no_buffers" in wanted and str(c.no_buffers) != wanted["no_buffers"]:
+        if "total_memory" in wanted and str(c.total_memory) != wanted["total_memory"]:
             return False
         if "spill" in wanted and sd["name"] != wanted["spill"]:
             return False
@@ -354,11 +377,13 @@ def render_query(
     port_b = port_a + 1
     sink_path = cell_dir / f"q_{q_index}.out"
 
+    ### Horizons are per-query, not per-cell: each query in a cell gets its own window, and a ladder
+    ### scaled to a 1s slide is meaningless for a 30s one.
     sql = env.get_template("query.sql.jinja").render(
         q_index=q_index,
         size_ms=size_ms,
         slide_ms=slide_ms,
-        spill=spill,
+        spill={**spill, **horizons_for(slide_ms)},
     )
     sql_path = cell_dir / f"q_{q_index}.sql"
     sql_path.write_text(sql)
@@ -419,7 +444,7 @@ def wait_for_ready(proc: subprocess.Popen, timeout_s: float) -> None:
                 return
 
 
-def spawn_worker(threads: int, buf_size: int, no_buffers: int, cell_dir: Path) -> subprocess.Popen:
+def spawn_worker(threads: int, buf_size: int, total_memory: int, cell_dir: Path) -> subprocess.Popen:
     log_path = cell_dir / "worker.log"
     log = open(log_path, "w")
     return subprocess.Popen(
@@ -429,7 +454,8 @@ def spawn_worker(threads: int, buf_size: int, no_buffers: int, cell_dir: Path) -
             f"--data_address={cfg.DATA_ADDRESS}",
             f"--worker.query_engine.number_of_worker_threads={threads}",
             f"--worker.default_query_execution.operator_buffer_size={buf_size}",
-            f"--worker.number_of_buffers_in_global_buffer_manager={no_buffers}",
+            f"--worker.total_memory_in_bytes={total_memory}",
+            f"--worker.unpooled_memory_fraction={cfg.UNPOOLED_FRACTION}",
             f"--worker.buffer_usage_log_path={cell_dir / 'buffer_usage.csv'}",
             f"--worker.buffer_usage_monitor_interval_in_ms={cfg.MEMORY_SAMPLE_INTERVAL_MS}",
         ],
@@ -512,7 +538,7 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
         for g in generators:
             wait_for_ready(g, cfg.GENERATOR_READY_TIMEOUT_S)
 
-        worker = spawn_worker(cell.threads, cell.buf_size, cell.no_buffers, cell_dir)
+        worker = spawn_worker(cell.threads, cell.buf_size, cell.total_memory, cell_dir)
         rss_sampler = RssSampler(worker.pid, cell_dir / "rss.csv", cfg.MEMORY_SAMPLE_INTERVAL_MS)
         rss_sampler.start()
         wait_for_grpc(cfg.GRPC_PORT, cfg.WORKER_READY_TIMEOUT_S)
@@ -554,8 +580,11 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
         "cell_slug": cell.slug,
         "threads": cell.threads,
         "operator_buffer_size": cell.buf_size,
-        "no_buffers": cell.no_buffers,
+        "total_memory": cell.total_memory,
         "spill_variant": sd["name"],
+        "spill_policy": sd.get("policy", ""),
+        "spill_backend": sd.get("backend", ""),
+        "compress": int(sd.get("compress", False)),
         "predictor": sd.get("predictor", ""),
         "var_sized_bytes": cell.var_size,
         "ingestion_rate": cell.rate,
@@ -626,25 +655,24 @@ def main(argv: list[str]) -> int:
 
             if args.dry_matrix:
                 render_cell_artifacts(cell, cell_dir, env)
-                row = {
-                    "run_id": run_id,
-                    "cell_slug": cell.slug,
-                    "threads": cell.threads,
-                    "operator_buffer_size": cell.buf_size,
-                    "no_buffers": cell.no_buffers,
-                    "spill_variant": cell.spill_dict["name"],
-                    "predictor": cell.spill_dict.get("predictor", ""),
-                    "var_sized_bytes": cell.var_size,
-                    "ingestion_rate": cell.rate,
-                    "wall_s": "",
-                    "sinks_nonempty": "",
-                    "avg_throughput_tps": "",
-                    "throughput_samples": "",
-                    "peak_rss_bytes": "",
-                    "peak_pooled_used": "",
-                    "peak_unpooled_used": "",
-                    "failure_reason": "dry-matrix",
-                }
+                sd = cell.spill_dict
+                ### Every column present but blank, so this stays correct when RESULT_COLS grows.
+                row = dict.fromkeys(RESULT_COLS, "")
+                row.update(
+                    run_id=run_id,
+                    cell_slug=cell.slug,
+                    threads=cell.threads,
+                    operator_buffer_size=cell.buf_size,
+                    total_memory=cell.total_memory,
+                    spill_variant=sd["name"],
+                    spill_policy=sd.get("policy", ""),
+                    spill_backend=sd.get("backend", ""),
+                    compress=int(sd.get("compress", False)),
+                    predictor=sd.get("predictor", ""),
+                    var_sized_bytes=cell.var_size,
+                    ingestion_rate=cell.rate,
+                    failure_reason="dry-matrix",
+                )
             else:
                 row = run_cell(cell, cell_dir, run_id, env)
 

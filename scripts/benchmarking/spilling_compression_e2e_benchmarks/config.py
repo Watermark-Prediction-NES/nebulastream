@@ -42,20 +42,63 @@ CMAKE_TARGETS = ["nes-single-node-worker", "nes-cli"]
 MOLD_JOBS = 1
 
 ### Worker config sweep. Cartesian product over every list below.
-NUMBER_OF_WORKER_THREADS = [1, 4, 8]
+NUMBER_OF_WORKER_THREADS = [1, 8]
 OPERATOR_BUFFER_SIZE = [4096, 16384]
-NUMBER_OF_BUFFERS = [4096, 32768]
+### Total worker memory budget in bytes. The worker splits it into a pooled share (operator buffers,
+### so pooled buffer count = total * (1 - UNPOOLED_FRACTION) / operator_buffer_size) and an unpooled
+### share (var-sized data, hash maps, paged vectors). Exceeding the unpooled share fails the query
+### instead of OOM-killing the worker, so it doubles as the pressure the spill policies react to.
+TOTAL_MEMORY = [128 * 1024**2, 1024**3]
 
-### Spill sweep. Each dict becomes the SET (...) clause on the query.
-### 'predictor' is consumed only when policy == 'predictive'.
+### Share of TOTAL_MEMORY reserved for unpooled allocations. Not swept — one value for the whole run.
+UNPOOLED_FRACTION = 0.5
+
+### Spill sweep. Each dict becomes the SET (...) clause on the query, layered over SPILL_DEFAULTS.
+### 'predictor' is consumed only by the predictive and tiered policies; 'compress' and 'backend' are
+### orthogonal knobs, so (backend, compress) spans "evict to RAM/disk" x "compressed or not".
 SPILL_VARIANTS = [
     {"name": "off", "enabled": False},
+    ### Evict without compressing, gated on real memory pressure (high_bound stays at its default).
     {"name": "reactive-mem", "enabled": True, "policy": "reactive", "backend": "in-memory"},
     {"name": "reactive-file", "enabled": True, "policy": "reactive", "backend": "local-file"},
     {"name": "predictive-mem", "enabled": True, "policy": "predictive", "backend": "in-memory"},
     {"name": "predictive-file", "enabled": True, "policy": "predictive", "backend": "local-file"},
+    ### Ungated control for the two compress-* rows below: same forced eviction on every GC tick,
+    ### compression off. The difference between this and compress-file is compression alone.
+    {"name": "always-file", "enabled": True, "policy": "always", "backend": "local-file"},
+    ### in-memory + compress == compress without ever touching disk.
+    {"name": "compress-mem", "enabled": True, "policy": "always", "backend": "in-memory", "compress": True},
+    {"name": "compress-file", "enabled": True, "policy": "always", "backend": "local-file", "compress": True},
+    ### One tier per slice from the predicted time-to-trigger, instead of one target for all of them.
+    {"name": "tiered-mem", "enabled": True, "policy": "tiered", "backend": "in-memory", "compress": True},
+    {"name": "tiered-file", "enabled": True, "policy": "tiered", "backend": "local-file", "compress": True},
+    ### Ablation: the same ladder with the compressed rungs switched off, so it degrades to
+    ### Resident <-> Disk. Isolates "prediction decides WHEN to evict" from "compression".
+    {"name": "tiered-file-nocompress", "enabled": True, "policy": "tiered", "backend": "local-file", "compress": False},
 ]
 PREDICTOR_VARIANTS = ["ewma", "kalman"]
+
+### Filled in for any SPILL_VARIANTS entry that does not name the key. The horizons here are only
+### fallbacks: HORIZON_FRACTIONS below overrides them per query (see benchmark.py:horizons_for).
+SPILL_DEFAULTS = {
+    "compress": False,
+    "high_bound": 0.85,
+    "horizon_ms": 50,
+    "promote_horizon_ms": 20,
+    "compress_ram_horizon_ms": 200,
+    "compress_disk_horizon_ms": 1000,
+}
+
+### Tiered/predictive horizons as a fraction of the window's SLIDE, since slide is what sets the rate
+### at which slices become triggerable. Absolute horizons cannot work here: WINDOWS spans 1s to 30s, so
+### one fixed ladder either sits entirely inside the promote band for the short windows or entirely
+### inside the Disk rung for the long ones. Must be non-decreasing in this order.
+HORIZON_FRACTIONS = {
+    "promote_horizon_ms": 0.05,
+    "horizon_ms": 0.10,
+    "compress_ram_horizon_ms": 0.40,
+    "compress_disk_horizon_ms": 1.00,
+}
 
 ### value2 is the VARSIZED column; the generator emits a fixed ASCII payload of this byte count.
 VAR_SIZED_BYTES = [16, 256, 4096]

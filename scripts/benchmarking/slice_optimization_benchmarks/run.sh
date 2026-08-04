@@ -15,7 +15,7 @@
 ### Bench harness for the two slice-store knobs:
 ###   --worker.default_query_execution.slice_preallocation.preemptive_create_horizon_ms (0 = off)
 ###   --worker.default_query_execution.slice_preallocation.recycle_pool_size            (0 = off)
-### Mirrors scripts/benchmarking/spilling_e2e_benchmarks/run.sh: invoked from the nebulastream
+### Mirrors scripts/benchmarking/spilling_compression_e2e_benchmarks/run.sh: invoked from the nebulastream
 ### repo root, the local source tree is mounted into the dev docker image at /tmp/nebulastream,
 ### and benchmark.py runs inside the container.
 set -euo pipefail

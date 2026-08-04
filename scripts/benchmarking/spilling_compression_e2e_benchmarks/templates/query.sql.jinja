@@ -1,0 +1,27 @@
+{# A per-query SET replaces the whole SliceEvictionConfiguration POD rather than merging into it, so every
+   key this benchmark depends on must be named here -- an omitted key falls back to the struct
+   default, not to the worker's setting. See the KNOWN LIMITATION comment in QueryCompiler.cpp. -#}
+SELECT *
+FROM (SELECT * FROM streamA_q{{ q_index }})
+INNER JOIN (SELECT * FROM streamB_q{{ q_index }})
+ON id = id2
+WINDOW SLIDING (timestamp, size {{ size_ms }} ms, advance by {{ slide_ms }} ms)
+INTO sinkQ{{ q_index }}
+{% if spill.enabled -%}
+SET (TRUE AS EVICTION.ENABLED,
+     '{{ spill.policy  }}' AS EVICTION.POLICY,
+     '{{ spill.backend }}' AS EVICTION.BACKEND,
+     {{ 'TRUE' if spill.compress else 'FALSE' }} AS EVICTION.COMPRESS,
+     {{ spill.high_bound }} AS EVICTION.HIGH_BOUND
+     {%- if spill.policy in ('predictive', 'tiered') %},
+     '{{ spill.predictor }}' AS EVICTION.PREDICTOR,
+     {{ spill.horizon_ms }} AS EVICTION.HORIZON_MS
+     {%- endif %}
+     {%- if spill.policy == 'tiered' %},
+     {{ spill.promote_horizon_ms }} AS EVICTION.PROMOTE_HORIZON_MS,
+     {{ spill.compress_ram_horizon_ms }} AS EVICTION.COMPRESS_RAM_HORIZON_MS,
+     {{ spill.compress_disk_horizon_ms }} AS EVICTION.COMPRESS_DISK_HORIZON_MS
+     {%- endif %})
+{%- else -%}
+SET (FALSE AS EVICTION.ENABLED)
+{%- endif %};

@@ -28,7 +28,7 @@ fi
 
 LOCAL_SOURCE_DIR="$(pwd)"
 DOCKER_IMAGE="${DOCKER_IMAGE:-nebulastream/nes-development:local}"
-BENCH_REL="scripts/benchmarking/spilling_e2e_benchmarks"
+BENCH_REL="scripts/benchmarking/spilling_compression_e2e_benchmarks"
 
 ### Bootstrap payload run inside the container: venv → install → run → trap-cleanup.
 ### Single-quoted heredoc → no host-side interpolation; $BENCH_DIR, $VENV, $@ resolve
