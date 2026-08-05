@@ -142,8 +142,36 @@ function(project_enable_tidy)
             USES_TERMINAL
             COMMENT "Running clang-tidy on the diff vs origin/main (fix)")
 
+    # tidy-diff-to-prediction-main / -fix: the same, based on the prediction line's
+    # integration branch rather than origin/main, so work branched off it is checked
+    # against what it will actually merge into.
+    add_custom_target(tidy-diff-to-prediction-main
+            COMMAND ${CMAKE_COMMAND} -E env NES_TIDY_DIFF_BASE=origin/feature/prediction-main
+                ${TIDY_DRIVER}
+                ${CLANG_TIDY_DIFF_EXECUTABLE}
+                ${CLANG_TIDY_EXECUTABLE}
+                ${CMAKE_BINARY_DIR}
+                ${TIDY_DIFF_REPORT}
+                check
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            USES_TERMINAL
+            COMMENT "Running clang-tidy on the diff vs origin/feature/prediction-main (check)")
+
+    add_custom_target(tidy-diff-to-prediction-main-fix
+            COMMAND ${CMAKE_COMMAND} -E env NES_TIDY_DIFF_BASE=origin/feature/prediction-main
+                ${TIDY_DRIVER}
+                ${CLANG_TIDY_DIFF_EXECUTABLE}
+                ${CLANG_TIDY_EXECUTABLE}
+                ${CMAKE_BINARY_DIR}
+                ${TIDY_DIFF_REPORT}
+                fix
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            USES_TERMINAL
+            COMMENT "Running clang-tidy on the diff vs origin/feature/prediction-main (fix)")
+
     # clang-tidy sees the generated grpc/ANTLR/cxxbridge headers only if they exist, so generate them first.
-    foreach (TIDY_TARGET tidy-diff tidy-diff-fix tidy-diff-to-main tidy-diff-to-main-fix)
+    foreach (TIDY_TARGET tidy-diff tidy-diff-fix tidy-diff-to-main tidy-diff-to-main-fix
+            tidy-diff-to-prediction-main tidy-diff-to-prediction-main-fix)
         add_dependencies(${TIDY_TARGET} nes-codegen)
     endforeach ()
 endfunction(project_enable_tidy)
