@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <utility>
 #include <vector>
@@ -146,6 +147,18 @@ std::optional<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSliceBySlic
         return slicesReadLocked->find(sliceEnd)->second;
     }
     return {};
+}
+
+std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getAllSlices()
+{
+    const auto slicesReadLocked = slices.rlock();
+    std::vector<std::shared_ptr<Slice>> allSlices;
+    allSlices.reserve(slicesReadLocked->size());
+    for (const auto& slicePtr : *slicesReadLocked | std::views::values)
+    {
+        allSlices.push_back(slicePtr);
+    }
+    return allSlices;
 }
 
 std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> DefaultTimeBasedSliceStore::getAllNonTriggeredSlices()

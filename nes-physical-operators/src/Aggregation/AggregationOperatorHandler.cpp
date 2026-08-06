@@ -35,6 +35,7 @@
 #include <Util/Logger/Logger.hpp>
 #include <ErrorHandling.hpp>
 #include <PipelineExecutionContext.hpp>
+#include <StateReductionConfiguration.hpp>
 #include <WindowBasedOperatorHandler.hpp>
 
 namespace NES
@@ -44,8 +45,9 @@ AggregationOperatorHandler::AggregationOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    const uint64_t maxNumberOfBuckets)
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore))
+    const uint64_t maxNumberOfBuckets,
+    const StateReductionConfiguration& stateReductionConfiguration)
+    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), stateReductionConfiguration)
     , setupAlreadyCalled(false)
     , rollingAverageNumberOfKeys(RollingAverage<uint64_t>{100})
     , maxNumberOfBuckets(maxNumberOfBuckets)
@@ -74,6 +76,12 @@ void AggregationOperatorHandler::triggerSlices(
 {
     for (const auto& [windowInfo, allSlices] : slicesAndWindowInfo)
     {
+        /// Anything state reduction parked has to be back before the buffers are read, and it stays
+        /// pinned from here on. Reducing an emitted slice would not free anything: the buffers collected
+        /// below are stored as children of the trigger buffer, which keeps the same memory alive until
+        /// the probe is done. The pin is dropped when the slice leaves the store.
+        pinSlices(allSlices, *pipelineCtx->getBufferManager());
+
         /// Getting all hashmaps for each slice that has at least one tuple
         std::vector<TupleBuffer> allHashMapBuffers;
         uint64_t totalNumberOfTuples = 0;
@@ -99,7 +107,6 @@ void AggregationOperatorHandler::triggerSlices(
                 }
             }
         }
-
 
         /// We need a buffer that is large enough to store an EmittedAggregationWindow
         constexpr auto neededBufferSize = sizeof(EmittedAggregationWindow);
