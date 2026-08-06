@@ -140,6 +140,18 @@ public:
     /// is zeroed by init(), so it is valid from construction on. Returns nullptr when the filter is disabled.
     [[nodiscard]] uint64_t* getBloomFilterMemArea();
 
+    /// Recomputes the chain array and every entry's `next` link from the entry pages, and re-points the
+    /// end sentinel at its own slot.
+    ///
+    /// The chains, the `next` links and the sentinel are the only raw pointers this hash map stores, so
+    /// they are the only thing that does not survive being written to bytes and read back at a different
+    /// address. Everything else the map needs — page count, entry size, entries per page, and each
+    /// entry's own hash — lives in the buffers themselves, which is enough to rebuild all of it.
+    ///
+    /// Call this exactly once on a map restored from BufferTreeCodec::read, before any lookup. Calling it
+    /// on a live map is a no-op in effect but pointless work.
+    void rebuildChains();
+
     /// @warning Be super careful with this. Sometimes you need a pointer to the TupleBuffer but you should never alter it outside of this
     /// view and without using its access methods
     [[nodiscard]] TupleBuffer* getBuffer() { return std::addressof(buffer); }
