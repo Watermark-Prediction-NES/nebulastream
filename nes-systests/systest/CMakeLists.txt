@@ -223,6 +223,81 @@ if (NOT CODE_COVERAGE)
             set_tests_properties(systest_agg_${workerThreads}_sliceCache_${enableSliceCache}_compiler PROPERTIES LABELS "Systest" PROCESSORS ${workerThreads})
         endforeach ()
     endforeach ()
+
+    ## The state-reduction suite. Its .test files sweep every branch of the decision tree themselves, via a
+    ## per-file GlobalConfiguration block, and assert that all of them reproduce the in-memory baseline --
+    ## so this loop only varies what a .test file cannot express, which is the join strategy.
+    ##
+    ## They sit in their own group rather than in Join/Aggregation. Left in those groups they would run
+    ## inside every pre-existing join and aggregation job, multiplying each of those by four branches for
+    ## coverage these two entries already give.
+    ##
+    ## Each variant still gets its own spill_directory. That is belt-and-braces: a LOCAL_FILE store already
+    ## keys its directory by pid as well as by operator instance, so two workers sharing a root cannot
+    ## collide -- which they did, and which is what put that keying there.
+    foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+        set(stateReductionTestName systest_state_reduction_${joinStrategy})
+        ExternalData_Add_Test(test-data
+                NAME ${stateReductionTestName}
+                COMMAND systest -n 6 --show-query-performance --groups StateReduction --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
+                --optimizer join_strategy=${joinStrategy}
+                --
+                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${joinStrategy})
+        set_tests_properties(${stateReductionTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+    endforeach ()
+
+    ## The real coverage: every branch of the decision tree, forced, over the *whole* Join and Aggregation
+    ## suites. Reduction is a correctness no-op, so each branch has to reproduce every existing test's
+    ## output exactly. This is what makes the claim, rather than the four dedicated .test files above --
+    ## those state the invariant, these exercise it against everything already in the repo.
+    ##
+    ## One thread count and one execution mode: the dimension under test is the branch, and the loops
+    ## above already cover this data at every thread count and both modes.
+    foreach (stateReductionBranch IN ITEMS KeepInMemory CompressInMemory Spill CompressAndSpill)
+        foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+            set(branchTestName systest_state_reduction_${stateReductionBranch}_${joinStrategy})
+            ExternalData_Add_Test(test-data
+                    NAME ${branchTestName}
+                    COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
+                    --optimizer join_strategy=${joinStrategy}
+                    --
+                    --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                    --worker.default_query_execution.state_reduction.enabled=true
+                    --worker.default_query_execution.state_reduction.predictor=FORCED
+                    --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
+                    --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_${joinStrategy})
+            set_tests_properties(${branchTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        endforeach ()
+
+        set(branchAggTestName systest_state_reduction_${stateReductionBranch}_aggregation)
+        ExternalData_Add_Test(test-data
+                NAME ${branchAggTestName}
+                COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_aggregation --data ${EXPANDED_TEST_DATA_PATH}
+                --
+                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=163840000
+                --worker.default_query_execution.state_reduction.enabled=true
+                --worker.default_query_execution.state_reduction.predictor=FORCED
+                --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
+                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_aggregation)
+        set_tests_properties(${branchAggTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+    endforeach ()
+
+    ## And the predictive path, which no forced branch touches: a ceiling the operator can never be under,
+    ## so the cost model's answer is overridden and every eligible slice is escalated.
+    foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+        set(budgetTestName systest_state_reduction_budget_${joinStrategy})
+        ExternalData_Add_Test(test-data
+                NAME ${budgetTestName}
+                COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_budget_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
+                --optimizer join_strategy=${joinStrategy}
+                --
+                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                --worker.default_query_execution.state_reduction.enabled=true
+                --worker.default_query_execution.state_reduction.operator_memory_ceiling_bytes=1
+                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_budget_${joinStrategy})
+        set_tests_properties(${budgetTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+    endforeach ()
 endif (NOT CODE_COVERAGE)
 
 # Adding dependency for the nes-systest-lib so that the data is downloaded before the tests are run
