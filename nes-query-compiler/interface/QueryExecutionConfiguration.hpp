@@ -26,6 +26,7 @@
 #include <Configurations/Validation/NumberValidation.hpp>
 #include <Util/ExecutionMode.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -75,6 +76,9 @@ public:
 
     SliceCacheConfiguration sliceCacheConfiguration = {"slice_cache", "Configuration for the slice cache"};
 
+    StateReductionConfiguration stateReductionConfiguration
+        = {"state_reduction", "Configuration for compressing and spilling the state of windowed operators"};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -85,7 +89,8 @@ private:
             &numberOfRecordsPerKey,
             &maxNumberOfBuckets,
             &operatorBufferSize,
-            &sliceCacheConfiguration};
+            &sliceCacheConfiguration,
+            &stateReductionConfiguration};
     }
 };
 
