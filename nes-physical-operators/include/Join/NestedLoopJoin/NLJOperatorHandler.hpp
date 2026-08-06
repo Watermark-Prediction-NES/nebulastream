@@ -26,6 +26,7 @@
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <SliceStore/Slice.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -66,7 +67,8 @@ public:
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
         std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-        JoinTriggerStrategy triggerStrategy);
+        JoinTriggerStrategy triggerStrategy,
+        const StateReductionConfiguration& stateReductionConfiguration);
 
     [[nodiscard]] std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
     getCreateNewSlicesFunction(const CreateNewSlicesArguments&) const override;

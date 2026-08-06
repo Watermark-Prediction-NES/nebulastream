@@ -31,6 +31,7 @@
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Util/RollingAverage.hpp>
 #include <HashMapSlice.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -61,7 +62,8 @@ public:
         OriginId outputOriginId,
         std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
         uint64_t maxNumberOfBuckets,
-        JoinTriggerStrategy triggerStrategy);
+        JoinTriggerStrategy triggerStrategy,
+        const StateReductionConfiguration& stateReductionConfiguration);
 
     [[nodiscard]] std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
     getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const override;

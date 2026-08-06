@@ -17,4 +17,5 @@ add_source_files(nes-physical-operators
         CompressionAlgorithm.cpp
         SpillStore.cpp
         ReducibleSlice.cpp
+        StateReductionManager.cpp
 )
