@@ -379,4 +379,41 @@ ChainedHashMapEntry* ChainedHashMap::getChain(const uint64_t pos)
     return chainsBegin()[pos]; /// NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 }
 
+void ChainedHashMap::rebuildChains()
+{
+    PRECONDITION(getStatus() == VALID_CHM, "Hash map must be valid to rebuild its chains.");
+
+    const auto numberOfChains = getNumberOfChains();
+    auto chainsArray = chains();
+    std::ranges::fill(chainsArray, nullptr);
+    /// Same self-referential end sentinel init() writes. It points at its own slot, so it has to be
+    /// re-derived from the restored buffer's address rather than carried over from the old one.
+    chainsArray[numberOfChains]
+        = reinterpret_cast<ChainedHashMapEntry*>(&chainsArray[numberOfChains]); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+
+    const auto numberOfPages = getNumberOfPages();
+    const auto entrySize = getEntrySize();
+    const auto mask = getMask();
+
+    /// insertEntry appends entries page by page and pushes each one onto the head of its chain, so
+    /// replaying them in that same insertion order reproduces the original chain order exactly. That
+    /// matters: chain order is probe order, and probe order is the row order of the join output.
+    for (uint64_t pageIdx = 0; pageIdx < numberOfPages; ++pageIdx)
+    {
+        auto page = getPage(pageIdx);
+        const auto entriesOnPage = page.getNumberOfTuples();
+        auto memory = page.getAvailableMemoryArea();
+        for (uint64_t entryIdx = 0; entryIdx < entriesOnPage; ++entryIdx)
+        {
+            /// NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            auto* const entry = reinterpret_cast<ChainedHashMapEntry*>(memory.subspan(entryIdx * entrySize).data());
+            const auto entryPos = entry->hash & mask;
+            INVARIANT(entryPos < numberOfChains, "Invalid entry position {} for {} chains", entryPos, numberOfChains);
+            auto& chainPtr = chainsArray[entryPos];
+            entry->next = chainPtr;
+            chainPtr = entry;
+        }
+    }
+}
+
 }
