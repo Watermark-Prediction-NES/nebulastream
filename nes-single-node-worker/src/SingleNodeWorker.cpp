@@ -45,6 +45,7 @@
 #include <QueryId.hpp>
 #include <QueryStatus.hpp>
 #include <SingleNodeWorkerConfiguration.hpp>
+#include <ThroughputListener.hpp>
 #include <WorkerStatus.hpp>
 
 extern void initNetworkServices(const std::string& connectionAddr, const NES::Host& host, const NES::NetworkOptions& options);
@@ -71,6 +72,21 @@ SingleNodeWorker::SingleNodeWorker(const SingleNodeWorkerConfiguration& configur
             fmt::format("trace_{}_{:%Y-%m-%d_%H-%M-%S}_{:d}.json", host.getRawValue(), std::chrono::system_clock::now(), ::getpid()));
         googleTracePrinter->start();
         listener->addListener(googleTracePrinter);
+    }
+
+    if (const auto throughputInterval = configuration.throughputLogIntervalMs.getValue(); throughputInterval > 0)
+    {
+        listener->addQueryEngineListener(std::make_shared<ThroughputListener>(
+            std::chrono::milliseconds{throughputInterval},
+            [](const ThroughputListener::Report& report)
+            {
+                NES_INFO(
+                    "Throughput for query {}: {:.3f} tuples/s ({} tuples in {} ms)",
+                    report.queryId,
+                    report.tuplesPerSecond,
+                    report.tuples,
+                    report.interval.count());
+            }));
     }
 
     nodeEngine = NodeEngineBuilder(configuration.workerConfiguration, copyPtr(listener)).build(host);
