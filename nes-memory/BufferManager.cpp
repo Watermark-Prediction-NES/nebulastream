@@ -22,11 +22,15 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <stop_token>
+#include <thread>
 #include <utility>
 #include <unistd.h>
 #include <Runtime/AbstractBufferProvider.hpp>
@@ -47,7 +51,9 @@ BufferManager::BufferManager(
     const uint32_t numOfBuffers,
     std::shared_ptr<std::pmr::memory_resource> memoryResource,
     const size_t unpooledMemoryLimitInBytes,
-    const uint32_t alignment)
+    const uint32_t alignment,
+    std::optional<std::filesystem::path> monitorFilePath,
+    const std::chrono::milliseconds monitorInterval)
     : availableBuffers(numOfBuffers)
     , unpooledChunksManager(std::make_shared<UnpooledChunksManager>(memoryResource, unpooledMemoryLimitInBytes))
     , bufferSize(bufferSize)
@@ -57,6 +63,44 @@ BufferManager::BufferManager(
 {
     PRECONDITION(numOfBuffers > 0, "BufferManager requires at least one pooled buffer, but the configured budget yields {}", numOfBuffers);
     initialize();
+
+    /// Optional buffer-usage monitor. It captures a raw pointer to availableBuffers and to the unpooled chunks
+    /// manager; that is safe because monitorThread is the last declared member, so its jthread destructor stops
+    /// and joins this thread before either dependency is destroyed.
+    if (monitorFilePath.has_value())
+    {
+        monitorThread = std::jthread(
+            [availablePtr = &availableBuffers,
+             unpooledPtr = unpooledChunksManager.get(),
+             interval = monitorInterval,
+             totalBuffers = static_cast<uint64_t>(numOfBuffers),
+             path = std::move(monitorFilePath.value())](const std::stop_token& stopToken)
+            {
+                std::ofstream file(path);
+                if (!file.is_open())
+                {
+                    return;
+                }
+                file << "timestamp_ms,pooled_used,unpooled_used\n";
+                while (not stopToken.stop_requested())
+                {
+                    std::this_thread::sleep_for(interval);
+                    if (stopToken.stop_requested())
+                    {
+                        break;
+                    }
+                    const auto now
+                        = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+                    /// sizeGuess is approximate, but an exact count would need a queue-wide lock on the path
+                    /// every buffer allocation goes through. Sampling error is far below the signal here.
+                    const auto available = static_cast<uint64_t>(availablePtr->sizeGuess());
+                    const auto pooledUsed = totalBuffers > available ? totalBuffers - available : 0;
+                    const auto unpooledUsed = unpooledPtr->getNumberOfUnpooledBuffers();
+                    file << now << "," << pooledUsed << "," << unpooledUsed << "\n";
+                }
+            });
+    }
 }
 
 std::shared_ptr<BufferManager> BufferManager::create(
@@ -64,7 +108,9 @@ std::shared_ptr<BufferManager> BufferManager::create(
     const double unpooledMemoryFraction,
     const BufferAlignment alignment,
     const uint32_t bufferSize,
-    const std::shared_ptr<std::pmr::memory_resource>& memoryResource)
+    const std::shared_ptr<std::pmr::memory_resource>& memoryResource,
+    std::optional<std::filesystem::path> monitorFilePath,
+    const std::chrono::milliseconds monitorInterval)
 {
     PRECONDITION(
         unpooledMemoryFraction >= 0.0 and unpooledMemoryFraction <= 1.0,
@@ -80,7 +126,14 @@ std::shared_ptr<BufferManager> BufferManager::create(
         pooledMemoryInBytes / bufferSize);
     const auto numOfBuffers = static_cast<uint32_t>(pooledMemoryInBytes / bufferSize);
     return std::make_shared<BufferManager>(
-        Private{}, bufferSize, numOfBuffers, memoryResource, unpooledMemoryLimitInBytes, alignment.getRawValue());
+        Private{},
+        bufferSize,
+        numOfBuffers,
+        memoryResource,
+        unpooledMemoryLimitInBytes,
+        alignment.getRawValue(),
+        std::move(monitorFilePath),
+        monitorInterval);
 }
 
 BufferManager::~BufferManager()
