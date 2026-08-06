@@ -18,6 +18,7 @@ add_library(nes-memory
         TaggedPointer.cpp
         UnpooledChunksManager.cpp
         MemoryUtils.cpp
+        BufferTreeCodec.cpp
 )
 
 target_include_directories(nes-memory
