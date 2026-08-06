@@ -182,3 +182,41 @@ worker_timeout() {
   worker_timeout 5s -- --worker.unpooled_memory_fraction=0.0
   [ "$status" -eq 124 ] # stays alive
 }
+
+# Locks the config contract for the state-reduction options. Only the options validated at config-parse
+# time can be checked here, because an offline worker never builds a windowed operator. In particular the
+# ceiling-not-below-target rule is a PRECONDITION in StateReductionManager's constructor, which first runs
+# when a query is deployed -- there is nothing for this file to observe.
+
+@test "worker rejects an unknown state_reduction forced_decision" {
+  # Branch names are the C++ enumerator names. KEEP_IN_MEMORY looks plausible and is not one of them,
+  # which is exactly the mistake worth catching at startup rather than at query time.
+  worker_timeout 5s -- --worker.default_query_execution.state_reduction.forced_decision=KEEP_IN_MEMORY
+  grep -E "invalid config parameter|Enum for" singleNodeWorker.log
+  grep "KEEP_IN_MEMORY" singleNodeWorker.log
+}
+
+@test "worker rejects state_reduction learning_rate out of range" {
+  # Validated to [0.0, 1.0] at config-parse time, so both bounds are rejected there.
+  worker_timeout 5s -- --worker.default_query_execution.state_reduction.learning_rate=1.5
+  grep -E "invalid config parameter|Validator" singleNodeWorker.log
+  grep "learning_rate" singleNodeWorker.log
+
+  worker_timeout 5s -- --worker.default_query_execution.state_reduction.learning_rate=-0.1
+  grep -E "invalid config parameter|Validator" singleNodeWorker.log
+  grep "learning_rate" singleNodeWorker.log
+}
+
+@test "worker accepts a fully specified state_reduction config" {
+  # Every enum spelled out, and equal target and ceiling -- the boundary the ceiling rule allows.
+  worker_timeout 5s -- \
+    --worker.default_query_execution.state_reduction.enabled=true \
+    --worker.default_query_execution.state_reduction.predictor=FORCED \
+    --worker.default_query_execution.state_reduction.forced_decision=CompressAndSpill \
+    --worker.default_query_execution.state_reduction.watermark_predictor=KALMAN \
+    --worker.default_query_execution.state_reduction.compression=ZSTD \
+    --worker.default_query_execution.state_reduction.spill_store=LOCAL_FILE \
+    --worker.default_query_execution.state_reduction.operator_memory_target_bytes=1048576 \
+    --worker.default_query_execution.state_reduction.operator_memory_ceiling_bytes=1048576
+  [ "$status" -eq 124 ] # stays alive
+}
