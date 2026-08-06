@@ -14,16 +14,20 @@
 
 #include <Join/NestedLoopJoin/NLJSlice.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <span>
 #include <utility>
+#include <vector>
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/PagedVector/PagedVector.hpp>
 #include <Join/StreamJoinUtil.hpp>
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <SliceStore/Slice.hpp>
+#include <StateReduction/ReducibleSlice.hpp>
 #include <ErrorHandling.hpp>
 
 namespace NES
@@ -125,6 +129,10 @@ void NLJSlice::combinePagedVectors()
     /// For example, if different worker threads are emitting the same slice for different windows.
     /// To ensure correctness, we use a lock here
     const std::scoped_lock lock(combinePagedVectorsMutex);
+    /// Also exclusive against a reduction: this erases slots, and a reduction encoding the vector at the
+    /// same time would either miss pages or write ones that are about to be moved.
+    const std::unique_lock stateGuard{stateLock};
+    INVARIANT(not reduced, "Slice state must be resident before its paged vectors can be combined");
 
     /// Append all PagedVectors on the left join side and erase all items except for the first one
     /// We do this to ensure that we have only one PagedVector for each side during the probing phase
@@ -150,5 +158,34 @@ void NLJSlice::combinePagedVectors()
         }
         rightPagedVectorBuffers.erase(rightPagedVectorBuffers.begin() + 1, rightPagedVectorBuffers.end());
     }
+}
+
+uint64_t NLJSlice::residentBytes() const
+{
+    return SliceStateCodec::residentBytes(leftPagedVectorBuffers) + SliceStateCodec::residentBytes(rightPagedVectorBuffers);
+}
+
+void NLJSlice::serializeState(std::vector<std::byte>& out)
+{
+    if (reduced)
+    {
+        return;
+    }
+    SliceStateCodec::encodeAndRelease(out, leftPagedVectorBuffers);
+    SliceStateCodec::encodeAndRelease(out, rightPagedVectorBuffers);
+    reduced = true;
+}
+
+void NLJSlice::deserializeState(std::span<const std::byte> in, AbstractBufferProvider& bufferProvider)
+{
+    if (not reduced)
+    {
+        return;
+    }
+    /// A PagedVector needs no repair beyond this: its header holds counts and sizes, and it addresses
+    /// its pages and their variable-sized payloads by child index, all of which the codec reproduces.
+    SliceStateCodec::decodeInPlace(in, leftPagedVectorBuffers, bufferProvider);
+    SliceStateCodec::decodeInPlace(in, rightPagedVectorBuffers, bufferProvider);
+    reduced = false;
 }
 }

@@ -14,8 +14,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/PagedVector/PagedVector.hpp>
@@ -23,6 +26,7 @@
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/TupleBuffer.hpp>
 #include <SliceStore/Slice.hpp>
+#include <StateReduction/ReducibleSlice.hpp>
 
 namespace NES
 {
@@ -42,7 +46,7 @@ struct CreateNewNLJSliceArgs final : CreateNewSlicesArguments
 };
 
 /// This class represents a single slice for the NestedLoopJoin. It stores all tuples for the left and right stream.
-class NLJSlice final : public Slice
+class NLJSlice final : public Slice, public ReducibleSlice
 {
 public:
     NLJSlice(
@@ -65,7 +69,16 @@ public:
     /// Moves all tuples in this slice to the PagedVector at 0th index on both sides.
     void combinePagedVectors();
 
+    /// ReducibleSlice. The two per-side vectors of PagedVector main buffers are the whole of this
+    /// slice's state, and each of them owns its pages and their variable-sized payloads as child
+    /// buffers, so releasing them releases everything.
+    [[nodiscard]] uint64_t residentBytes() const override;
+    void serializeState(std::vector<std::byte>& out) override;
+    void deserializeState(std::span<const std::byte> in, AbstractBufferProvider& bufferProvider) override;
+
 private:
+    /// ReducibleSlice::stateLock guards these slots against a reduction running while a build or probe
+    /// reads them.
     std::vector<TupleBuffer> leftPagedVectorBuffers;
     std::vector<TupleBuffer> rightPagedVectorBuffers;
     std::mutex combinePagedVectorsMutex;
