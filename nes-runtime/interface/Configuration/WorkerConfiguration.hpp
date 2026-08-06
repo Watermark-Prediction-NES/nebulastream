@@ -85,6 +85,18 @@ public:
 
     BoolOption dumpGraph = {"dump_graph", "false", "If to dump graph of the compilation results"};
 
+    /// Empty string disables the monitor. A non-empty path starts a background thread in the BufferManager that
+    /// samples "timestamp_ms,pooled_used,unpooled_used" at buffer_usage_monitor_interval_in_ms. This is how the
+    /// state-reduction benchmarks read memory consumption over time.
+    StringOption bufferUsageLogPath
+        = {"buffer_usage_log_path", "", "Path to write buffer-usage CSV (timestamp_ms,pooled_used,unpooled_used); empty disables."};
+
+    UIntOption bufferUsageMonitorIntervalMs
+        = {"buffer_usage_monitor_interval_in_ms",
+           "100",
+           "Sampling interval in milliseconds for the buffer-usage monitor.",
+           {std::make_shared<NumberValidation>()}};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -98,7 +110,9 @@ private:
             &bufferAlignmentInBytes,
             &defaultMaxInflightBuffers,
             &dumpQueryCompilationIR,
-            &dumpGraph};
+            &dumpGraph,
+            &bufferUsageLogPath,
+            &bufferUsageMonitorIntervalMs};
     }
 };
 }

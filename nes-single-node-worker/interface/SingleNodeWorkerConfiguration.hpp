@@ -22,6 +22,7 @@
 #include <Configurations/BaseOption.hpp>
 #include <Configurations/ScalarOption.hpp>
 #include <Configurations/Validation/EndpointValidation.hpp>
+#include <Configurations/Validation/NumberValidation.hpp>
 
 namespace NES
 {
@@ -47,6 +48,14 @@ connections.  Valid values include dns:///localhost:1234,
         = {"enable_event_trace",
            "false",
            "Enable Google Event Trace logging that generates Chrome tracing compatible JSON files for performance analysis."};
+
+    /// 0 disables. Any positive value starts a listener that logs a per-query tuple rate at that interval;
+    /// see ThroughputListener for what exactly is being counted.
+    UIntOption throughputLogIntervalMs
+        = {"throughput_log_interval_in_ms",
+           "0",
+           "Interval in milliseconds at which per-query throughput is logged; 0 disables.",
+           {std::make_shared<NumberValidation>()}};
 
 protected:
     std::vector<BaseOption*> getOptions() override;
