@@ -27,6 +27,7 @@
 #include <Util/ExecutionMode.hpp>
 #include <BloomFilterConfiguration.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -73,6 +74,9 @@ public:
 
     BloomFilterConfiguration bloomFilterConfiguration = {"bloom_filter", "Configuration for the hash maps' in-map BloomFilter"};
 
+    StateReductionConfiguration stateReductionConfiguration
+        = {"state_reduction", "Configuration for compressing and spilling the state of windowed operators"};
+
 private:
     std::vector<BaseOption*> getOptions() override
     {
@@ -83,7 +87,8 @@ private:
             &numberOfRecordsPerKey,
             &operatorBufferSize,
             &sliceCacheConfiguration,
-            &bloomFilterConfiguration};
+            &bloomFilterConfiguration,
+            &stateReductionConfiguration};
     }
 };
 
