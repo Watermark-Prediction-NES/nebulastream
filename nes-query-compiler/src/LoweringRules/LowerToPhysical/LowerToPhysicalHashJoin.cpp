@@ -391,8 +391,12 @@ LoweringRuleResultSubgraph LowerToPhysicalHashJoin::apply(LogicalOperator logica
         std::unreachable();
     };
 
-    auto handler
-        = std::make_shared<HJOperatorHandler>(inputOriginIds, outputOriginId, std::move(sliceAndWindowStore), createTriggerStrategy());
+    auto handler = std::make_shared<HJOperatorHandler>(
+        inputOriginIds,
+        outputOriginId,
+        std::move(sliceAndWindowStore),
+        createTriggerStrategy(),
+        conf.stateReductionConfiguration);
 
     /// Creating the left and right hash join build operator
     const HJBuildPhysicalOperator leftBuildOperator{

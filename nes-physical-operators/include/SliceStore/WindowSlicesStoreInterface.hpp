@@ -77,6 +77,11 @@ public:
     /// Retrieves the slice by its end timestamp. If no slice exists for the given slice end, the optional return value is nullopt
     virtual std::optional<std::shared_ptr<Slice>> getSliceBySliceEnd(SliceEnd sliceEnd) = 0;
 
+    /// Retrieves every slice the store currently holds, triggered or not. Unlike the two methods above
+    /// this says nothing about windows: it is the set of slices whose state is occupying memory right
+    /// now, which is what state reduction reasons about.
+    virtual std::vector<std::shared_ptr<Slice>> getAllSlices() = 0;
+
     /// Retrieves all current non-deleted slices that have not been triggered yet
     /// This method returns for each window all slices that have not been triggered yet, regardless of any watermark timestamp
     /// Additionally, it returns a sequence number per window that is incremented for each window and thus, it can be used to set it in the emitted tuple buffer for the probe operator.

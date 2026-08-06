@@ -25,6 +25,7 @@
 #include <SliceStore/Slice.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <PipelineExecutionContext.hpp>
+#include <StateReductionConfiguration.hpp>
 #include <WindowBasedOperatorHandler.hpp>
 
 namespace NES
@@ -33,8 +34,10 @@ StreamJoinOperatorHandler::StreamJoinOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    JoinTriggerStrategy triggerStrategy)
-    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore)), triggerStrategy(std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    const StateReductionConfiguration& stateReductionConfiguration)
+    : WindowBasedOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), stateReductionConfiguration)
+    , triggerStrategy(std::move(triggerStrategy))
 {
 }
 

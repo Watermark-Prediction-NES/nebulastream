@@ -39,6 +39,7 @@
 #include <ErrorHandling.hpp>
 #include <HashMapSlice.hpp>
 #include <PipelineExecutionContext.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -84,8 +85,10 @@ HJOperatorHandler::HJOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    JoinTriggerStrategy triggerStrategy)
-    : StreamJoinOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    const StateReductionConfiguration& stateReductionConfiguration)
+    : StreamJoinOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy), stateReductionConfiguration)
     , setupAlreadyCalledLeft(false)
     , setupAlreadyCalledRight(false)
 {
@@ -132,6 +135,15 @@ void HJOperatorHandler::emitSlicesToProbe(
     const SequenceData& sequenceData,
     PipelineExecutionContext* pipelineCtx)
 {
+    /// Anything state reduction parked has to be back before the buffers are read, and it stays pinned
+    /// from here on. Reducing an emitted slice would not free anything: the buffers collected below are
+    /// stored as children of the trigger buffer, which keeps the same memory alive until the probe is
+    /// done. Encoding it a second time would only add a compressed copy on top. The pin is dropped when
+    /// the slice leaves the store.
+    const auto bufferProvider = pipelineCtx->getBufferManager();
+    pinSlices(leftSlices, *bufferProvider);
+    pinSlices(rightSlices, *bufferProvider);
+
     const auto leftHashMapBuffers = getHashMapsFromSlices(leftSlices, JoinBuildSideType::Left);
     const auto rightHashMapBuffers = getHashMapsFromSlices(rightSlices, JoinBuildSideType::Right);
 
