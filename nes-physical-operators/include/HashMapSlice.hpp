@@ -14,10 +14,12 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -26,6 +28,7 @@
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/TupleBuffer.hpp>
 #include <SliceStore/Slice.hpp>
+#include <StateReduction/ReducibleSlice.hpp>
 #include <CompilationContext.hpp>
 
 namespace NES
@@ -67,7 +70,7 @@ enum class HashMapBufferState : uint8_t
 /// +---------------------+---------------------+---------------------+---------------------+---------------------+
 ///
 /// As the hashmap might need to clean up its state, we expect multiple clean up functions as part of the @struct CreateNewHashMapSliceArgs
-class HashMapSlice : public Slice
+class HashMapSlice : public Slice, public ReducibleSlice
 {
 public:
     explicit HashMapSlice(
@@ -81,6 +84,12 @@ public:
     [[nodiscard]] uint64_t getNumberOfHashMaps() const;
     [[nodiscard]] uint64_t getNumInputStreams() const;
     [[nodiscard]] uint64_t getNumHashMapsPerInputStream() const;
+
+    /// ReducibleSlice. Implemented here rather than in HJSlice and AggregationSlice, because both of
+    /// them keep all of their state in the hash map buffers this class owns.
+    [[nodiscard]] uint64_t residentBytes() const override;
+    void serializeState(std::vector<std::byte>& out) override;
+    void deserializeState(std::span<const std::byte> in, AbstractBufferProvider& bufferProvider) override;
 
 protected:
     /// We use this private struct to store the CreateNewHashMapSliceArgs parameters in a trivially-copyable way, that is also embedded in the header.
@@ -114,6 +123,7 @@ protected:
     uint64_t numHashmapsPerInputStream;
     HashMapSliceParams params;
     /// the hash map buffers for the hash map slice
+    /// ReducibleSlice::stateLock guards these against a reduction running while a build or probe reads them.
     std::vector<TupleBuffer> hashMapBuffers;
     /// Holds the state of whether individual tuplebuffers have been allocated.
     std::vector<HashMapBufferState> hashMapBuffersState;
