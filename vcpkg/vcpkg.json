@@ -58,7 +58,8 @@
     "simdjson",
     "spdlog",
     "yaml-cpp",
-    "rapidcheck"
+    "rapidcheck",
+    "zstd"
   ],
   "default-features": [
     "mqtt"
