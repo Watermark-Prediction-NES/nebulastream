@@ -33,6 +33,7 @@
 #include <Util/Logger/Logger.hpp>
 #include <ErrorHandling.hpp>
 #include <PipelineExecutionContext.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -40,8 +41,10 @@ NLJOperatorHandler::NLJOperatorHandler(
     const std::vector<OriginId>& inputOrigins,
     const OriginId outputOriginId,
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-    JoinTriggerStrategy triggerStrategy)
-    : StreamJoinOperatorHandler(inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy))
+    JoinTriggerStrategy triggerStrategy,
+    const StateReductionConfiguration& stateReductionConfiguration)
+    : StreamJoinOperatorHandler(
+          inputOrigins, outputOriginId, std::move(sliceAndWindowStore), std::move(triggerStrategy), stateReductionConfiguration)
 {
 }
 
@@ -67,6 +70,16 @@ void NLJOperatorHandler::emitSlicesToProbe(
     const SequenceData& sequenceData,
     PipelineExecutionContext* pipelineCtx)
 {
+    /// Unlike the hash join, the probe reads these slices live: it resolves a SliceEnd back to the slice
+    /// and iterates its paged vectors, rather than working from retained copies of the buffers. So the
+    /// pin has to outlast this method and is deliberately never released — a slice already handed to the
+    /// probe is about to be read and then garbage collected, so there is nothing to gain by reducing it
+    /// again in between. The manager drops the pin when the slice leaves the store.
+    /// combinePagedVectors() below also requires resident state outright.
+    const auto bufferProvider = pipelineCtx->getBufferManager();
+    pinSlices(leftSlices, *bufferProvider);
+    pinSlices(rightSlices, *bufferProvider);
+
     /// Combine paged vectors for all slices on both sides
     uint64_t totalNumberOfTuples = 0;
     for (const auto& slice : leftSlices)

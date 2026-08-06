@@ -24,6 +24,7 @@
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <SliceStore/Slice.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
+#include <StateReductionConfiguration.hpp>
 #include <WindowBasedOperatorHandler.hpp>
 
 namespace NES
@@ -47,7 +48,8 @@ public:
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
         std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
-        JoinTriggerStrategy triggerStrategy);
+        JoinTriggerStrategy triggerStrategy,
+        const StateReductionConfiguration& stateReductionConfiguration);
 
 protected:
     /// Delegates to the configured JoinTriggerStrategy for each triggered window.

@@ -14,20 +14,24 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
+#include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <Runtime/QueryTerminationType.hpp>
 #include <Sequencing/SequenceData.hpp>
 #include <SliceStore/Slice.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
+#include <StateReduction/StateReductionManager.hpp>
 #include <Time/Timestamp.hpp>
 #include <Watermark/MultiOriginWatermarkProcessor.hpp>
 #include <PipelineExecutionContext.hpp>
+#include <StateReductionConfiguration.hpp>
 
 namespace NES
 {
@@ -60,7 +64,8 @@ public:
     WindowBasedOperatorHandler(
         const std::vector<OriginId>& inputOrigins,
         OriginId outputOriginId,
-        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore);
+        std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
+        const StateReductionConfiguration& stateReductionConfiguration);
 
     ~WindowBasedOperatorHandler() override = default;
 
@@ -92,10 +97,25 @@ protected:
         PipelineExecutionContext* pipelineCtx)
         = 0;
 
+    /// Brings a slice's state back if state reduction parked it, and keeps it resident from then on.
+    /// Every path that hands slice state to a probe has to call this first, which is why it sits on the
+    /// base rather than in each operator's handler.
+    ///
+    /// There is deliberately no unpin counterpart. A slice is pinned at the point it is emitted to the
+    /// probe, and from there its memory is held alive by the trigger buffer anyway, so reducing it again
+    /// would cost an encode and free nothing. The pin is dropped when the slice leaves the slice store.
+    void pinSlice(const std::shared_ptr<Slice>& slice, AbstractBufferProvider& bufferProvider) const;
+    void pinSlices(const std::vector<std::shared_ptr<Slice>>& slices, AbstractBufferProvider& bufferProvider) const;
+
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore;
+    std::unique_ptr<StateReductionManager> stateReduction;
     std::unique_ptr<MultiOriginWatermarkProcessor> watermarkProcessorBuild;
     std::unique_ptr<MultiOriginWatermarkProcessor> watermarkProcessorProbe;
     uint64_t numberOfWorkerThreads = 0;
+    /// checkAndTriggerWindows runs per input buffer and on every worker thread, but the global watermark
+    /// only moves occasionally. Enumerating the store's slices is not free, so the decision loop is driven
+    /// off actual advances. Atomic because the threads racing here are the point, not an edge case.
+    std::atomic<Timestamp::Underlying> lastReductionWatermark{Timestamp::INVALID_VALUE};
     const OriginId outputOriginId;
     const std::vector<OriginId> inputOrigins;
 };
