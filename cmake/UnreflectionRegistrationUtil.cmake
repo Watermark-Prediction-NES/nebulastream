@@ -137,15 +137,19 @@ namespace NES
 namespace
 {
 const auto registered_${registry_key}_${registry} = [] {
+    /// The owner is what makes this tolerant of the same object being linked more than once (these
+    /// symbols are internal, so that is not a link error) while still catching two different types
+    /// claiming the same key.
     const bool registered = ${registry}UnreflectionRegistry::instance().addUnreflectorEntry(
         \"${registry_key}\",
+        \"${unreflect_type}\",
         [](const Reflected& data, const ReflectionContext& context) {
             return context.unreflect<${unreflect_type}>(data);
         });
     if (!registered)
     {
         /// Static-init context: an uncaught throw aborts the program loudly, without main() being able to catch it.
-        throw std::runtime_error{std::string{\"Duplicate unreflection registration for \\\"${registry_key}\\\" in ${registry}\"}};
+        throw std::runtime_error{std::string{\"Conflicting unreflection registration for \\\"${registry_key}\\\" in ${registry}: already registered by a different type than ${unreflect_type}\"}};
     }
     return 0;
 }();
