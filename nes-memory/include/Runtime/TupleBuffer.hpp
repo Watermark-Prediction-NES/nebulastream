@@ -157,6 +157,11 @@ public:
     [[nodiscard]] Timestamp getWatermark() const noexcept;
     void setWatermark(Timestamp value) noexcept;
 
+    /// Smallest event timestamp among this buffer's records, stamped by the watermark assigners (the
+    /// watermark carries the largest). Not serialized across network hops, like the creation timestamp.
+    [[nodiscard]] Timestamp getMinTimestamp() const noexcept;
+    void setMinTimestamp(Timestamp value) noexcept;
+
     [[nodiscard]] Timestamp getCreationTimestampInMS() const noexcept;
     void setSequenceNumber(SequenceNumber sequenceNumber) noexcept;
 

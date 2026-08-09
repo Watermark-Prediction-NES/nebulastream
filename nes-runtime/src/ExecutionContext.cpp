@@ -64,6 +64,8 @@ ExecutionContext::ExecutionContext(const nautilus::val<PipelineExecutionContext*
     , pipelineMemoryProvider(arena, invoke(getBufferProviderProxy, pipelineContext))
     , originId(INVALID<OriginId>)
     , watermarkTs(0_u64)
+    , minTs(0_u64)
+    , repeatDelayMs(0_u64)
     , currentTs(0_u64)
     , sequenceNumber(INVALID<SequenceNumber>)
     , chunkNumber(INVALID<ChunkNumber>)

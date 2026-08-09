@@ -130,6 +130,7 @@ void EmitPhysicalOperator::emitRecordBuffer(
 {
     recordBuffer.setNumRecords(numRecords);
     recordBuffer.setWatermarkTs(ctx.watermarkTs);
+    recordBuffer.setMinTs(ctx.minTs);
     recordBuffer.setOriginId(ctx.originId);
     recordBuffer.setSequenceNumber(ctx.sequenceNumber);
     recordBuffer.setCreationTs(ctx.currentTs);

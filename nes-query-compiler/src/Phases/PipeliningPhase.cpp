@@ -265,8 +265,15 @@ void buildPipelineRecursively(
     /// it should close the pipeline without adding a default emit
     if (opWrapper->getPipelineLocation() == PhysicalOperatorWrapper::PipelineLocation::EMIT)
     {
-        if (not prevOpWrapper || prevOpWrapper->getPipelineLocation() == PhysicalOperatorWrapper::PipelineLocation::EMIT)
+        if (not prevOpWrapper || prevOpWrapper->getPipelineLocation() == PhysicalOperatorWrapper::PipelineLocation::EMIT
+            || policy == PipelinePolicy::ForceNew)
         {
+            /// A forced break behind a fused (non-emitting) operator has to close the current pipeline
+            /// first; in the other two branches there is either no pipeline to close or it emits itself.
+            if (prevOpWrapper and prevOpWrapper->getPipelineLocation() != PhysicalOperatorWrapper::PipelineLocation::EMIT)
+            {
+                addDefaultEmit(currentPipeline, *prevOpWrapper, configuredBufferSize);
+            }
             /// If the current operator is an emit operator and the prev operator was also an emit operator, we need to add a scan before the
             /// current operator to create a new pipeline
             auto newPipeline = createNewPipelineWithScan(currentPipeline, pipelineMap, *opWrapper, configuredBufferSize);
@@ -398,7 +405,10 @@ void buildPipelineRecursively(
     {
         if (prevOpWrapper and prevOpWrapper->getPipelineLocation() != PhysicalOperatorWrapper::PipelineLocation::EMIT)
         {
-            addDefaultEmit(currentPipeline, *opWrapper, configuredBufferSize);
+            /// The closing emit must describe what the PREVIOUS operator produces: the new pipeline's scan
+            /// is built from this operator's input schema, and prev output == this input. Using this
+            /// operator's output schema instead only works when its input and output schemas coincide.
+            addDefaultEmit(currentPipeline, *prevOpWrapper, configuredBufferSize);
         }
         const auto newPipeline = std::make_shared<Pipeline>(opWrapper->getPhysicalOperator());
         if (auto handlerId = opWrapper->getHandlerId())
@@ -411,10 +421,11 @@ void buildPipelineRecursively(
         PRECONDITION(newPipelinePtr->isOperatorPipeline(), "Only add scan physical operator to operator pipelines");
         newPipelinePtr->prependOperator(
             createScanOperator(*currentPipeline, opWrapper->getInputSchema(), opWrapper->getInputMemoryLayoutType(), configuredBufferSize));
+        /// An operator may request a break after itself so its buffer metadata becomes readable downstream.
+        const auto childPolicy = opWrapper->breaksPipelineAfter() ? PipelinePolicy::ForceNew : PipelinePolicy::Continue;
         for (auto& child : opWrapper->getChildren())
         {
-            buildPipelineRecursively(
-                child, opWrapper, newPipelinePtr, pipelineMap, PipelinePolicy::Continue, configuredBufferSize, mergePoints);
+            buildPipelineRecursively(child, opWrapper, newPipelinePtr, pipelineMap, childPolicy, configuredBufferSize, mergePoints);
         }
         return;
     }
@@ -441,10 +452,11 @@ void buildPipelineRecursively(
     }
     else
     {
+        /// An operator may request a break after itself so its buffer metadata becomes readable downstream.
+        const auto childPolicy = opWrapper->breaksPipelineAfter() ? PipelinePolicy::ForceNew : PipelinePolicy::Continue;
         for (auto& child : opWrapper->getChildren())
         {
-            buildPipelineRecursively(
-                child, opWrapper, currentPipeline, pipelineMap, PipelinePolicy::Continue, configuredBufferSize, mergePoints);
+            buildPipelineRecursively(child, opWrapper, currentPipeline, pipelineMap, childPolicy, configuredBufferSize, mergePoints);
         }
     }
 }

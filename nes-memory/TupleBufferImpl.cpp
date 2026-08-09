@@ -288,6 +288,16 @@ Timestamp BufferControlBlock::getCreationTimestamp() const noexcept
     return creationTimestamp;
 }
 
+void BufferControlBlock::setMinTimestamp(const Timestamp timestamp)
+{
+    this->minTimestamp = timestamp;
+}
+
+Timestamp BufferControlBlock::getMinTimestamp() const noexcept
+{
+    return minTimestamp;
+}
+
 OriginId BufferControlBlock::getOriginId() const noexcept
 {
     return originId;

@@ -23,7 +23,9 @@ namespace NES
 class IngestionTimeWatermarkAssignerPhysicalOperator : public PhysicalOperatorConcept
 {
 public:
-    explicit IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction timeFunction);
+    /// trackMinTs additionally maintains the buffer's minimum event timestamp for slice-group creation.
+    /// It is a tracing-time constant: when false, the compiled code is identical to not tracking at all.
+    explicit IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction timeFunction, bool trackMinTs = false);
     void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
     [[nodiscard]] std::optional<PhysicalOperator> getChild() const override;
@@ -31,6 +33,7 @@ public:
 
 private:
     IngestionTimeFunction timeFunction;
+    bool trackMinTs;
     std::optional<PhysicalOperator> child;
 };
 

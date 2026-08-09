@@ -25,8 +25,9 @@
 namespace NES
 {
 
-IngestionTimeWatermarkAssignerPhysicalOperator::IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction timeFunction)
-    : timeFunction(std::move(timeFunction)) { };
+IngestionTimeWatermarkAssignerPhysicalOperator::IngestionTimeWatermarkAssignerPhysicalOperator(
+    IngestionTimeFunction timeFunction, const bool trackMinTs)
+    : timeFunction(std::move(timeFunction)), trackMinTs(trackMinTs) { };
 
 void IngestionTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
@@ -41,6 +42,11 @@ void IngestionTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& exec
     if (const auto currentWatermark = executionCtx.watermarkTs; tsField > currentWatermark)
     {
         executionCtx.watermarkTs = tsField;
+    }
+    if (trackMinTs)
+    {
+        /// With ingestion time every record in the buffer carries the same timestamp, so min == max.
+        executionCtx.minTs = tsField;
     }
 }
 
