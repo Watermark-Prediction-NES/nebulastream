@@ -26,6 +26,7 @@
 #include <Configurations/Validation/NumberValidation.hpp>
 #include <Util/ExecutionMode.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 #include <StateReductionConfiguration.hpp>
 
 namespace NES
@@ -76,6 +77,8 @@ public:
 
     SliceCacheConfiguration sliceCacheConfiguration = {"slice_cache", "Configuration for the slice cache"};
 
+    SliceStoreConfiguration sliceStoreConfiguration = {"slice_store", "Configuration for the slice store"};
+
     StateReductionConfiguration stateReductionConfiguration
         = {"state_reduction", "Configuration for compressing and spilling the state of windowed operators"};
 
@@ -90,6 +93,7 @@ private:
             &maxNumberOfBuckets,
             &operatorBufferSize,
             &sliceCacheConfiguration,
+            &sliceStoreConfiguration,
             &stateReductionConfiguration};
     }
 };

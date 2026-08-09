@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -31,6 +32,8 @@
 #include <SliceStore/SliceStoreRef.hpp>
 #include <Time/Timestamp.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
+#include <val_arith.hpp>
 #include <val_concepts.hpp>
 
 namespace NES
@@ -51,6 +54,7 @@ public:
 
     explicit DefaultTimeBasedSliceStoreRef(
         SliceCacheConfiguration sliceCacheConfiguration,
+        const SliceStoreConfiguration& sliceStoreConfiguration,
         DefaultTimeBasedSliceStore* sliceStore,
         DataStructureExtractor dataStructureExtractor,
         CreateSlicesFunction createSlicesFunction);
@@ -62,6 +66,13 @@ public:
     NautilusBuffer getDataStructureRef(
         const nautilus::val<Timestamp>& timestamp,
         const nautilus::val<WorkerThreadId>& workerThreadId,
+        const nautilus::val<OperatorHandler*>& operatorHandler,
+        nautilus::val<AbstractBufferProvider*> bufferProvider) override;
+
+    [[nodiscard]] bool isGroupCreationEnabled() const override;
+    nautilus::val<uint64_t> claimOrDeferSliceRange(
+        const nautilus::val<Timestamp>& minTs,
+        const nautilus::val<Timestamp>& maxTs,
         const nautilus::val<OperatorHandler*>& operatorHandler,
         nautilus::val<AbstractBufferProvider*> bufferProvider) override;
 
@@ -81,6 +92,13 @@ private:
         const DefaultTimeBasedSliceStoreRef* sliceStoreRef,
         DefaultTimeBasedSliceStore* sliceStore,
         AbstractBufferProvider* bufferProvider);
+    friend uint64_t defaultTimeBasedSliceStoreRefClaimOrDeferProxy(
+        OperatorHandler* operatorHandlerPtr,
+        Timestamp minTs,
+        Timestamp maxTs,
+        const DefaultTimeBasedSliceStoreRef* sliceStoreRef,
+        DefaultTimeBasedSliceStore* sliceStore,
+        AbstractBufferProvider* bufferProvider);
 
     DataStructureExtractor dataStructureExtractor;
     CreateSlicesFunction createSlicesFunction;
@@ -88,6 +106,7 @@ private:
     /// Having these as C++ values is fine, as they do not change between tracing and runtime of the query.
     std::unique_ptr<SliceCache> sliceCache;
     DefaultTimeBasedSliceStore* sliceStore;
+    bool groupCreationEnabled;
 };
 
 }

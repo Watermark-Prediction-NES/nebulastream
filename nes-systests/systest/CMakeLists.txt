@@ -67,6 +67,14 @@ else ()
     set(sliceCacheValues true)
 endif ()
 
+# Slice recycling and cooperative slice-group creation are both correctness no-ops: whatever they change about how
+# slices are allocated and when they are created, every query must produce exactly the output it produces with both
+# off. So the suites below sweep the full cross product instead of relying on the two dedicated .test files, which
+# state the invariant but only exercise it on their own queries. Every such loop sets sliceFlagSuffix (for the ctest
+# name and the working/spill directories, which must stay unique per variant) and sliceFlagArgs.
+set(sliceGroupCreationValues false true)
+set(sliceRecyclingValues false true)
+
 # Group exclude lists for systest invocations. The Inference group requires the IREE toolchain;
 # when ENABLE_IREE_TESTS is OFF (e.g. iree-import-onnx / iree-compile not in PATH) we exclude it
 # so the .test files in nes-systests/inference/ are skipped at runtime.
@@ -119,10 +127,19 @@ foreach (enableSliceCache IN LISTS sliceCacheValues)
 endforeach ()
 if (NOT CODE_COVERAGE)
     foreach (enableSliceCache IN LISTS sliceCacheValues)
-        ExternalData_Add_Test(test-data
-                NAME systest_compiler_sliceCache_${enableSliceCache}
-                COMMAND systest -n 20 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/compiler_sliceCache_${enableSliceCache} --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --data ${EXPANDED_TEST_DATA_PATH} -- --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=COMPILER --enable_event_trace=true --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache})
-        set_tests_properties(systest_compiler_sliceCache_${enableSliceCache} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        foreach (enableGroupCreation IN LISTS sliceGroupCreationValues)
+            foreach (enableSliceRecycling IN LISTS sliceRecyclingValues)
+                set(sliceFlagSuffix groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+                set(sliceFlagArgs
+                        --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
+                        --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                set(compilerTestName systest_compiler_sliceCache_${enableSliceCache}_${sliceFlagSuffix})
+                ExternalData_Add_Test(test-data
+                        NAME ${compilerTestName}
+                        COMMAND systest -n 20 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/compiler_sliceCache_${enableSliceCache}_${sliceFlagSuffix} --exclude-groups ${SYSTEST_EXCLUDE_GROUPS_COMPILER} --data ${EXPANDED_TEST_DATA_PATH} -- --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=COMPILER --enable_event_trace=true --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=${enableSliceCache} ${sliceFlagArgs})
+                set_tests_properties(${compilerTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            endforeach ()
+        endforeach ()
     endforeach ()
 
     # Benchmarking mode (-b) drives the runner sequentially and writes BenchmarkResults.json. Without this target the only -b
@@ -146,11 +163,22 @@ if (ENABLE_LARGE_TESTS)
     set(LARGE_TEST_UNPOOLED_FRACTION 0.8935) # 68719476736 / 76911476736
 
     set(joinStrategy HASH_JOIN) # We simply test here with a hash join, as a NLJ does not finish in 2h
-    ExternalData_Add_Test(test-data
-            # currently, 4 worker threads perform the best on the large systests (avoids lock contention on NEXMARK Query 5)
-            NAME systest_large_${joinStrategy}
-            COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH} --groups large --optimizer join_strategy=${joinStrategy}  -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=${LARGE_TEST_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${LARGE_TEST_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=true)
-    set_tests_properties(systest_large_${joinStrategy} PROPERTIES LABELS "Systest" PROCESSORS 4)
+    # Same cross product as the compiler run above, on large inputs: the slice counts here are what actually
+    # exercise the pool cap and the group-size predictor, which the small suite barely reaches.
+    foreach (enableGroupCreation IN LISTS sliceGroupCreationValues)
+        foreach (enableSliceRecycling IN LISTS sliceRecyclingValues)
+            set(sliceFlagSuffix groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+            set(sliceFlagArgs
+                    --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
+                    --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+            set(largeTestName systest_large_${joinStrategy}_${sliceFlagSuffix})
+            ExternalData_Add_Test(test-data
+                    # currently, 4 worker threads perform the best on the large systests (avoids lock contention on NEXMARK Query 5)
+                    NAME ${largeTestName}
+                    COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH} --groups large --optimizer join_strategy=${joinStrategy}  -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=${LARGE_TEST_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${LARGE_TEST_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=true ${sliceFlagArgs})
+            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        endforeach ()
+    endforeach ()
 
     ExternalData_Add_Test(test-data
             # currently, 16 worker threads perform the best on the large systests (avoids lock contention on NEXMARK Query 5)
@@ -161,10 +189,15 @@ if (ENABLE_LARGE_TESTS)
     # Running here the Nexmark.test queries with NLJ to test it for larger data sets but the input data size
     # is still small enough to finish the test in minutes.
     set(joinStrategy NESTED_LOOP_JOIN)
-    ExternalData_Add_Test(TEST_DATA_LARGE
-            NAME systest_large_${joinStrategy}
-            COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH} -t ${CMAKE_CURRENT_SOURCE_DIR}/../benchmark/Nexmark.test:05 --optimizer join_strategy=${joinStrategy} -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=16384000000 --worker.default_query_execution.slice_cache.enable_slice_cache=true)
-    set_tests_properties(systest_large_${joinStrategy} PROPERTIES LABELS "Systest" PROCESSORS 4)
+    foreach (enableGroupCreation IN ITEMS false true)
+        foreach (enableSliceRecycling IN ITEMS false true)
+            set(largeTestName systest_large_${joinStrategy}_groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+            ExternalData_Add_Test(TEST_DATA_LARGE
+                    NAME ${largeTestName}
+                    COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy}_groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling} --data ${EXPANDED_TEST_DATA_PATH} -t ${CMAKE_CURRENT_SOURCE_DIR}/../benchmark/Nexmark.test:05 --optimizer join_strategy=${joinStrategy} -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=16384000000 --worker.default_query_execution.slice_cache.enable_slice_cache=true --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation} --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        endforeach ()
+    endforeach ()
 
     # The in-process large tests above each run one worker at LARGE_TEST_TOTAL_MEMORY_BYTES on this host. Fail loudly at
     # configure time if the host cannot back a single worker's budget rather than silently dropping the coverage or
@@ -236,15 +269,24 @@ if (NOT CODE_COVERAGE)
     ## keys its directory by pid as well as by operator instance, so two workers sharing a root cannot
     ## collide -- which they did, and which is what put that keying there.
     foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
-        set(stateReductionTestName systest_state_reduction_${joinStrategy})
-        ExternalData_Add_Test(test-data
-                NAME ${stateReductionTestName}
-                COMMAND systest -n 6 --show-query-performance --groups StateReduction --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
-                --optimizer join_strategy=${joinStrategy}
-                --
-                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
-                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${joinStrategy})
-        set_tests_properties(${stateReductionTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        foreach (enableGroupCreation IN LISTS sliceGroupCreationValues)
+            foreach (enableSliceRecycling IN LISTS sliceRecyclingValues)
+                set(sliceFlagSuffix groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+                set(sliceFlagArgs
+                        --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
+                        --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                set(stateReductionTestName systest_state_reduction_${joinStrategy}_${sliceFlagSuffix})
+                ExternalData_Add_Test(test-data
+                        NAME ${stateReductionTestName}
+                        COMMAND systest -n 6 --show-query-performance --groups StateReduction --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                        --optimizer join_strategy=${joinStrategy}
+                        --
+                        --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                        ${sliceFlagArgs}
+                        --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${joinStrategy}_${sliceFlagSuffix})
+                set_tests_properties(${stateReductionTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            endforeach ()
+        endforeach ()
     endforeach ()
 
     ## The real coverage: every branch of the decision tree, forced, over the *whole* Join and Aggregation
@@ -255,48 +297,67 @@ if (NOT CODE_COVERAGE)
     ## One thread count and one execution mode: the dimension under test is the branch, and the loops
     ## above already cover this data at every thread count and both modes.
     foreach (stateReductionBranch IN ITEMS KeepInMemory CompressInMemory Spill CompressAndSpill)
-        foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
-            set(branchTestName systest_state_reduction_${stateReductionBranch}_${joinStrategy})
-            ExternalData_Add_Test(test-data
-                    NAME ${branchTestName}
-                    COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
-                    --optimizer join_strategy=${joinStrategy}
-                    --
-                    --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
-                    --worker.default_query_execution.state_reduction.enabled=true
-                    --worker.default_query_execution.state_reduction.predictor=FORCED
-                    --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
-                    --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_${joinStrategy})
-            set_tests_properties(${branchTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
-        endforeach ()
+        foreach (enableGroupCreation IN LISTS sliceGroupCreationValues)
+            foreach (enableSliceRecycling IN LISTS sliceRecyclingValues)
+                set(sliceFlagSuffix groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+                set(sliceFlagArgs
+                        --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
+                        --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+                    set(branchTestName systest_state_reduction_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix})
+                    ExternalData_Add_Test(test-data
+                            NAME ${branchTestName}
+                            COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                            --optimizer join_strategy=${joinStrategy}
+                            --
+                            --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                            --worker.default_query_execution.state_reduction.enabled=true
+                            --worker.default_query_execution.state_reduction.predictor=FORCED
+                            --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
+                            ${sliceFlagArgs}
+                            --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix})
+                    set_tests_properties(${branchTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+                endforeach ()
 
-        set(branchAggTestName systest_state_reduction_${stateReductionBranch}_aggregation)
-        ExternalData_Add_Test(test-data
-                NAME ${branchAggTestName}
-                COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_aggregation --data ${EXPANDED_TEST_DATA_PATH}
-                --
-                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=163840000
-                --worker.default_query_execution.state_reduction.enabled=true
-                --worker.default_query_execution.state_reduction.predictor=FORCED
-                --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
-                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_aggregation)
-        set_tests_properties(${branchAggTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+                set(branchAggTestName systest_state_reduction_${stateReductionBranch}_aggregation_${sliceFlagSuffix})
+                ExternalData_Add_Test(test-data
+                        NAME ${branchAggTestName}
+                        COMMAND systest -n 6 --show-query-performance --groups Aggregation --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_aggregation_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                        --
+                        --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=163840000
+                        --worker.default_query_execution.state_reduction.enabled=true
+                        --worker.default_query_execution.state_reduction.predictor=FORCED
+                        --worker.default_query_execution.state_reduction.forced_decision=${stateReductionBranch}
+                        ${sliceFlagArgs}
+                        --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_${stateReductionBranch}_aggregation_${sliceFlagSuffix})
+                set_tests_properties(${branchAggTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            endforeach ()
+        endforeach ()
     endforeach ()
 
     ## And the predictive path, which no forced branch touches: a ceiling the operator can never be under,
     ## so the cost model's answer is overridden and every eligible slice is escalated.
     foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
-        set(budgetTestName systest_state_reduction_budget_${joinStrategy})
-        ExternalData_Add_Test(test-data
-                NAME ${budgetTestName}
-                COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_budget_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH}
-                --optimizer join_strategy=${joinStrategy}
-                --
-                --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
-                --worker.default_query_execution.state_reduction.enabled=true
-                --worker.default_query_execution.state_reduction.operator_memory_ceiling_bytes=1
-                --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_budget_${joinStrategy})
-        set_tests_properties(${budgetTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+        foreach (enableGroupCreation IN LISTS sliceGroupCreationValues)
+            foreach (enableSliceRecycling IN LISTS sliceRecyclingValues)
+                set(sliceFlagSuffix groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling})
+                set(sliceFlagArgs
+                        --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
+                        --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                set(budgetTestName systest_state_reduction_budget_${joinStrategy}_${sliceFlagSuffix})
+                ExternalData_Add_Test(test-data
+                        NAME ${budgetTestName}
+                        COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_budget_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                        --optimizer join_strategy=${joinStrategy}
+                        --
+                        --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
+                        --worker.default_query_execution.state_reduction.enabled=true
+                        --worker.default_query_execution.state_reduction.operator_memory_ceiling_bytes=1
+                        ${sliceFlagArgs}
+                        --worker.default_query_execution.state_reduction.spill_directory=${CMAKE_CURRENT_BINARY_DIR}/spill_budget_${joinStrategy}_${sliceFlagSuffix})
+                set_tests_properties(${budgetTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            endforeach ()
+        endforeach ()
     endforeach ()
 endif (NOT CODE_COVERAGE)
 

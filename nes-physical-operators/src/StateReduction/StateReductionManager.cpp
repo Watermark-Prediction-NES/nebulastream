@@ -45,6 +45,7 @@
 #include <Util/Logger/Logger.hpp>
 #include <Watermark/WatermarkPredictor.hpp>
 #include <fmt/format.h>
+#include <folly/Synchronized.h>
 #include <magic_enum/magic_enum.hpp>
 #include <ErrorHandling.hpp>
 #include <StateReductionConfiguration.hpp>
@@ -78,11 +79,15 @@ bool spillsToStore(const StateDecision decision)
 }
 
 StateReductionManager::StateReductionManager(
-    const StateReductionConfiguration& configuration, const uint64_t operatorInstanceId, const uint64_t windowSize)
+    const StateReductionConfiguration& configuration,
+    const uint64_t operatorInstanceId,
+    const uint64_t windowSize,
+    const folly::Synchronized<std::unique_ptr<WatermarkPredictor>>* watermarkPredictor)
     : enabled(configuration.enabled.getValue())
     , memoryTargetBytes(configuration.memoryTargetBytes.getValue())
     , memoryCeilingBytes(configuration.memoryCeilingBytes.getValue())
     , calibrationRepetitions(static_cast<uint32_t>(configuration.calibrationRepetitions.getValue()))
+    , watermarkPredictor(watermarkPredictor)
     , windowSize(windowSize)
     , statsLogPath(configuration.statsLogPath.getValue())
     , watermarkPredictorName(magic_enum::enum_name(configuration.watermarkPredictor.getValue()))
@@ -111,8 +116,6 @@ StateReductionManager::StateReductionManager(
     const auto directory = std::filesystem::path{configuration.spillDirectory.getValue()}
         / fmt::format("worker-{}-operator-{}", ::getpid(), operatorInstanceId);
     spillStore = SpillStore::create(configuration.spillStore.getValue(), directory);
-
-    watermarkPredictor = WatermarkPredictor::create(configuration.watermarkPredictor.getValue());
 
     learningRate = configuration.learningRate.getValue();
     switch (configuration.predictor.getValue())
@@ -149,7 +152,7 @@ void StateReductionManager::calibrate()
 
 uint64_t StateReductionManager::predictedTimeUntilNeededInMs(const Timestamp lastNeededAt) const
 {
-    const auto predicted = watermarkPredictor.withRLock(
+    const auto predicted = watermarkPredictor->withRLock(
         [lastNeededAt](const auto& predictor)
         { return predictor ? predictor->predictWallClock(lastNeededAt) : Timestamp{Timestamp::INVALID_VALUE}; });
 
@@ -175,18 +178,6 @@ void StateReductionManager::onWatermarkAdvanced(const Timestamp globalWatermark,
     if (not enabled)
     {
         return;
-    }
-
-    if (lastObservedWatermark.exchange(globalWatermark.getRawValue(), std::memory_order_relaxed) != globalWatermark.getRawValue())
-    {
-        watermarkPredictor.withWLock(
-            [globalWatermark](auto& predictor)
-            {
-                if (predictor)
-                {
-                    predictor->observe(globalWatermark, wallClockNow());
-                }
-            });
     }
 
     /// One pass to size the operator, because the budget is a property of the whole operator rather

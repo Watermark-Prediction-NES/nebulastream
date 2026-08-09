@@ -14,6 +14,7 @@
 
 #include <SliceStore/DefaultTimeBasedSliceStoreRef.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <Identifiers/Identifiers.hpp>
@@ -29,8 +30,10 @@
 #include <ErrorHandling.hpp>
 #include <PipelineExecutionContext.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 #include <WindowBasedOperatorHandler.hpp>
 #include <function.hpp>
+#include <val_arith.hpp>
 #include <val_ptr.hpp>
 
 namespace NES
@@ -68,8 +71,48 @@ void defaultTimeBasedSliceStoreRefCacheMissProxy(
     entryToReplace->dataStructure = sliceStoreRef->dataStructureExtractor(*slices[0], workerThreadId, *bufferProvider);
 }
 
+/// Runs the winner election for one buffer's event-time range: either this thread finds everything
+/// present, or it claims and creates the group, or it learns how long to defer.
+uint64_t defaultTimeBasedSliceStoreRefClaimOrDeferProxy(
+    OperatorHandler* operatorHandlerPtr,
+    const Timestamp minTs,
+    const Timestamp maxTs,
+    const DefaultTimeBasedSliceStoreRef* sliceStoreRef,
+    DefaultTimeBasedSliceStore* sliceStore,
+    AbstractBufferProvider* bufferProvider)
+{
+    PRECONDITION(operatorHandlerPtr != nullptr, "The operator handler should not be null");
+    auto* windowHandler = dynamic_cast<WindowBasedOperatorHandler*>(operatorHandlerPtr);
+    PRECONDITION(windowHandler != nullptr, "The operator handler should be a WindowBasedOperatorHandler");
+
+    const auto createFunction = sliceStoreRef->createSlicesFunction(*windowHandler, *bufferProvider);
+    return sliceStore->claimOrDeferSliceRange(minTs, maxTs, windowHandler->currentWatermarkRateEstimate(), createFunction);
+}
+
+bool DefaultTimeBasedSliceStoreRef::isGroupCreationEnabled() const
+{
+    return groupCreationEnabled;
+}
+
+nautilus::val<uint64_t> DefaultTimeBasedSliceStoreRef::claimOrDeferSliceRange(
+    const nautilus::val<Timestamp>& minTs,
+    const nautilus::val<Timestamp>& maxTs,
+    const nautilus::val<OperatorHandler*>& operatorHandler,
+    nautilus::val<AbstractBufferProvider*> bufferProvider)
+{
+    return nautilus::invoke(
+        defaultTimeBasedSliceStoreRefClaimOrDeferProxy,
+        operatorHandler,
+        minTs,
+        maxTs,
+        nautilus::val<const DefaultTimeBasedSliceStoreRef*>(this),
+        nautilus::val<DefaultTimeBasedSliceStore*>{sliceStore},
+        bufferProvider);
+}
+
 DefaultTimeBasedSliceStoreRef::DefaultTimeBasedSliceStoreRef(
     SliceCacheConfiguration sliceCacheConfiguration,
+    const SliceStoreConfiguration& sliceStoreConfiguration,
     DefaultTimeBasedSliceStore* sliceStore,
     DataStructureExtractor dataStructureExtractor,
     CreateSlicesFunction createSlicesFunction)
@@ -77,6 +120,7 @@ DefaultTimeBasedSliceStoreRef::DefaultTimeBasedSliceStoreRef(
     , createSlicesFunction(std::move(createSlicesFunction))
     , sliceCache(SliceCache::createSliceCache(sliceCacheConfiguration))
     , sliceStore(sliceStore)
+    , groupCreationEnabled(sliceStoreConfiguration.enableSliceGroupCreation.getValue())
 {
 }
 
@@ -90,6 +134,7 @@ DefaultTimeBasedSliceStoreRef::DefaultTimeBasedSliceStoreRef(const DefaultTimeBa
     , createSlicesFunction(other.createSlicesFunction)
     , sliceCache(other.sliceCache->clone())
     , sliceStore(other.sliceStore)
+    , groupCreationEnabled(other.groupCreationEnabled)
 {
 }
 

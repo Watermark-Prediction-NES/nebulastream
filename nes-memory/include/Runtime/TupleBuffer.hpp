@@ -158,7 +158,7 @@ public:
     void setWatermark(Timestamp value) noexcept;
 
     /// Smallest event timestamp among this buffer's records, stamped by the watermark assigners (the
-    /// watermark carries the largest). Not serialized across network hops, like the creation timestamp.
+    /// watermark carries the largest). INVALID_VALUE on buffers nothing has stamped yet.
     [[nodiscard]] Timestamp getMinTimestamp() const noexcept;
     void setMinTimestamp(Timestamp value) noexcept;
 

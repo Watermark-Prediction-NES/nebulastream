@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/NautilusBuffer.hpp>
@@ -22,6 +23,7 @@
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <SliceStore/SliceCache/SliceCache.hpp>
 #include <Time/Timestamp.hpp>
+#include <val_arith.hpp>
 #include <val_concepts.hpp>
 
 namespace NES
@@ -45,6 +47,22 @@ public:
         const nautilus::val<OperatorHandler*>& operatorHandler,
         nautilus::val<AbstractBufferProvider*> bufferProvider)
         = 0;
+
+    /// Whether cooperative slice-group creation is configured. A tracing-time constant: the window build
+    /// only traces its claim-or-defer path when this is true.
+    [[nodiscard]] virtual bool isGroupCreationEnabled() const { return false; }
+
+    /// Claims or defers the creation of all slices covering the buffer's event-time range [minTs, maxTs].
+    /// Returns 0 when the caller may process its buffer; otherwise a retry delay in ms because another
+    /// worker thread is creating an overlapping range.
+    virtual nautilus::val<uint64_t> claimOrDeferSliceRange(
+        const nautilus::val<Timestamp>& /*minTs*/,
+        const nautilus::val<Timestamp>& /*maxTs*/,
+        const nautilus::val<OperatorHandler*>& /*operatorHandler*/,
+        nautilus::val<AbstractBufferProvider*> /*bufferProvider*/)
+    {
+        return 0;
+    }
 
     /// Necessary, as our PhysicalOperators get copied during the pipelining phase, but we need to ensure uniqueness for the slice store ref
     virtual std::unique_ptr<SliceStoreRef> clone() = 0;

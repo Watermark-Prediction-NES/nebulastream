@@ -56,7 +56,14 @@ class StateReductionManager
 public:
     /// @param windowSize the operator's window size, which is what turns a slice end into the time the
     ///        slice stops being needed. Without it there is no horizon to predict against.
-    StateReductionManager(const StateReductionConfiguration& configuration, uint64_t operatorInstanceId, uint64_t windowSize);
+    /// @param watermarkPredictor borrowed from the owning WindowBasedOperatorHandler (which also feeds
+    ///        it), so the watermark rate stays available to other consumers when state reduction is off.
+    ///        Must outlive this manager; the handler guarantees that by declaration order.
+    StateReductionManager(
+        const StateReductionConfiguration& configuration,
+        uint64_t operatorInstanceId,
+        uint64_t windowSize,
+        const folly::Synchronized<std::unique_ptr<WatermarkPredictor>>* watermarkPredictor);
     ~StateReductionManager();
 
     StateReductionManager(const StateReductionManager&) = delete;
@@ -198,9 +205,8 @@ private:
     std::unique_ptr<StatePredictor> statePredictor;
     std::unique_ptr<CompressionAlgorithm> compression;
     std::unique_ptr<SpillStore> spillStore;
-    /// Guarded because observe() mutates it from the build thread while predictWallClock() is read from
-    /// the same loop; WatermarkPredictor implementations are documented as not thread-safe.
-    folly::Synchronized<std::unique_ptr<WatermarkPredictor>> watermarkPredictor;
+    /// Borrowed from the owning WindowBasedOperatorHandler, which also owns the single observe site.
+    const folly::Synchronized<std::unique_ptr<WatermarkPredictor>>* watermarkPredictor;
 
     folly::Synchronized<std::unordered_map<uint64_t, ReducedState>> reducedStates;
     /// Slices that have been handed to a probe and are therefore off limits to the decision loop. Keyed
@@ -221,9 +227,6 @@ private:
     std::string watermarkPredictorName;
     uint64_t instanceId;
     std::atomic<bool> statsWritten{false};
-    /// Atomic for the same reason as the handler's guard: the decision loop can be entered from more than
-    /// one worker thread, and this is what keeps observe() from being fed the same watermark twice.
-    std::atomic<Timestamp::Underlying> lastObservedWatermark{Timestamp::INVALID_VALUE};
 };
 
 }

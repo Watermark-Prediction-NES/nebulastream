@@ -96,8 +96,28 @@ void WindowBuildPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuf
     /// Initializing the time function
     timeFunction->open(executionCtx, recordBuffer);
 
-    /// Creating the local state for the window operator build.
     const auto operatorHandler = executionCtx.getGlobalOperatorHandler(operatorHandlerId);
+
+    /// Cooperative slice-group creation (tracing-time constant, so the compiled query is unchanged when
+    /// off): one thread wins the buffer's slice range and creates the whole group; the others defer their
+    /// buffer via REPEAT until the winner is done. Empty buffers carry no event timestamps (minTs stays
+    /// INVALID, above any watermark) and skip the claim.
+    if (sliceStoreRef->isGroupCreationEnabled())
+    {
+        if (executionCtx.minTs <= executionCtx.watermarkTs)
+        {
+            const auto retryDelayMs = sliceStoreRef->claimOrDeferSliceRange(
+                executionCtx.minTs, executionCtx.watermarkTs, operatorHandler, executionCtx.pipelineMemoryProvider.bufferProvider);
+            if (retryDelayMs > 0)
+            {
+                executionCtx.repeatDelayMs = retryDelayMs;
+                executionCtx.setOpenReturnState(OpenReturnState::REPEAT);
+                return;
+            }
+        }
+    }
+
+    /// Creating the local state for the window operator build.
     executionCtx.setLocalOperatorState(id, std::make_unique<WindowOperatorBuildLocalState>(operatorHandler));
 }
 

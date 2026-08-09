@@ -314,7 +314,7 @@ LoweringRuleResultSubgraph LowerToPhysicalHashJoin::apply(LogicalOperator logica
     /// Creating the hash join operator handler and slice store
     auto handlerId = getNextOperatorHandlerId();
     auto sliceAndWindowStore = std::make_unique<DefaultTimeBasedSliceStore>(
-        windowType.getSize().getTime(), windowType.getSlide().getTime(), conf.sliceCacheConfiguration);
+        windowType.getSize().getTime(), windowType.getSlide().getTime(), conf.sliceCacheConfiguration, conf.sliceStoreConfiguration);
     auto sliceStoreRefLeft = sliceAndWindowStore->createSliceStoreRef(
         [](Slice& slice, const WorkerThreadId workerThreadId, AbstractBufferProvider& bufferProvider)
         {

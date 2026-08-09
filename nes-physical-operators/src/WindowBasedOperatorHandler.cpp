@@ -29,6 +29,7 @@
 #include <StateReduction/StateReductionManager.hpp>
 #include <Util/Logger/Logger.hpp>
 #include <Watermark/MultiOriginWatermarkProcessor.hpp>
+#include <Watermark/WatermarkPredictor.hpp>
 #include <PipelineExecutionContext.hpp>
 #include <StateReductionConfiguration.hpp>
 
@@ -52,9 +53,10 @@ WindowBasedOperatorHandler::WindowBasedOperatorHandler(
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore,
     const StateReductionConfiguration& stateReductionConfiguration)
     : sliceAndWindowStore(std::move(sliceAndWindowStore))
-    /// this->sliceAndWindowStore is declared before stateReduction, so it is already initialised here.
+    , watermarkPredictor(WatermarkPredictor::create(stateReductionConfiguration.watermarkPredictor.getValue()))
+    /// this->sliceAndWindowStore and watermarkPredictor are declared before stateReduction, so they are already initialised here.
     , stateReduction(std::make_unique<StateReductionManager>(
-          stateReductionConfiguration, nextStateReductionInstanceId(), this->sliceAndWindowStore->getWindowSize()))
+          stateReductionConfiguration, nextStateReductionInstanceId(), this->sliceAndWindowStore->getWindowSize(), &watermarkPredictor))
     , watermarkProcessorBuild(std::make_unique<MultiOriginWatermarkProcessor>(inputOrigins))
     , watermarkProcessorProbe(std::make_unique<MultiOriginWatermarkProcessor>(std::vector{outputOriginId}))
     , numberOfWorkerThreads(0)
@@ -115,6 +117,11 @@ WindowSlicesStoreInterface& WindowBasedOperatorHandler::getSliceAndWindowStore()
     return *sliceAndWindowStore;
 }
 
+double WindowBasedOperatorHandler::currentWatermarkRateEstimate() const
+{
+    return watermarkPredictor.withRLock([](const auto& predictor) { return predictor ? predictor->currentRateEstimate() : 0.0; });
+}
+
 void WindowBasedOperatorHandler::garbageCollectSlicesAndWindows(const BufferMetaData& bufferMetaData) const
 {
     const auto newGlobalWaterMarkProbe
@@ -141,6 +148,20 @@ void WindowBasedOperatorHandler::checkAndTriggerWindows(const BufferMetaData& bu
         bufferMetaData.originId,
         bufferMetaData.seqNumber,
         bufferMetaData.watermarkTs);
+
+    /// The single observe site of the watermark predictor: each advance is fed exactly once, whether the
+    /// consumer is state reduction, slice-group creation, or both.
+    if (lastObservedWatermark.exchange(newGlobalWatermark.getRawValue(), std::memory_order_relaxed) != newGlobalWatermark.getRawValue())
+    {
+        watermarkPredictor.withWLock(
+            [newGlobalWatermark](auto& predictor)
+            {
+                if (predictor)
+                {
+                    predictor->observe(newGlobalWatermark, predictorWallClockNow());
+                }
+            });
+    }
 
     /// The one place every window operator sees a fresh global build watermark, and therefore the only
     /// place that can decide what to do with slice state. Driven off actual advances rather than off

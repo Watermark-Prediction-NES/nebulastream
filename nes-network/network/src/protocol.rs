@@ -121,6 +121,7 @@ pub struct TupleBuffer {
     pub sequence_number: u64,
     pub origin_id: u64,
     pub watermark: u64,
+    pub min_timestamp: u64,
     pub chunk_number: u64,
     pub number_of_tuples: u64,
     pub last_chunk: bool,
