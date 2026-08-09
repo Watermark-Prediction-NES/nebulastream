@@ -96,6 +96,16 @@ void RecordBuffer::setWatermarkTs(const nautilus::val<Timestamp>& watermarkTs)
     invoke(ProxyFunctions::NES_Memory_TupleBuffer_setWatermark, tupleBufferRef, watermarkTs);
 }
 
+nautilus::val<Timestamp> RecordBuffer::getMinTs()
+{
+    return {invoke(ProxyFunctions::NES_Memory_TupleBuffer_getMinTimestamp, tupleBufferRef)};
+}
+
+void RecordBuffer::setMinTs(const nautilus::val<Timestamp>& minTs)
+{
+    invoke(ProxyFunctions::NES_Memory_TupleBuffer_setMinTimestamp, tupleBufferRef, minTs);
+}
+
 nautilus::val<SequenceNumber> RecordBuffer::getSequenceNumber()
 {
     return {invoke(ProxyFunctions::NES_Memory_TupleBuffer_getSequenceNumber, tupleBufferRef)};

@@ -55,6 +55,7 @@ TupleBuffer deepCopyBuffer(const TupleBuffer& buffer, AbstractBufferProvider& pr
     copiedBuffer.setChunkNumber(buffer.getChunkNumber());
     copiedBuffer.setSequenceNumber(buffer.getSequenceNumber());
     copiedBuffer.setCreationTimestampInMS(buffer.getCreationTimestampInMS());
+    copiedBuffer.setMinTimestamp(buffer.getMinTimestamp());
     copiedBuffer.setLastChunk(buffer.isLastChunk());
     copiedBuffer.setOriginId(buffer.getOriginId());
     copiedBuffer.setNumberOfTuples(buffer.getNumberOfTuples());

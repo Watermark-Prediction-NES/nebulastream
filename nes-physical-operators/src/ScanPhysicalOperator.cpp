@@ -53,6 +53,11 @@ void ScanPhysicalOperator::rawScan(ExecutionContext& executionCtx, RecordBuffer&
 
     /// call open on all child operators
     openChild(executionCtx, recordBuffer);
+    /// A child operator may defer the whole buffer (OpenReturnState::REPEAT); no record must be processed then.
+    if (executionCtx.getOpenReturnState() == OpenReturnState::REPEAT)
+    {
+        return;
+    }
 
     /// process buffer
     const auto executeChildLambda = [this](ExecutionContext& executionCtx, Record& record) { executeChild(executionCtx, record); };
@@ -63,6 +68,7 @@ void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& re
 {
     /// initialize global state variables to keep track of the watermark ts and the origin id
     executionCtx.watermarkTs = recordBuffer.getWatermarkTs();
+    executionCtx.minTs = recordBuffer.getMinTs();
     executionCtx.originId = recordBuffer.getOriginId();
     executionCtx.currentTs = recordBuffer.getCreatingTs();
     executionCtx.sequenceNumber = recordBuffer.getSequenceNumber();
@@ -76,6 +82,13 @@ void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& re
     }
     /// call open on all child operators
     openChild(executionCtx, recordBuffer);
+    /// A child operator may defer the whole buffer (OpenReturnState::REPEAT). No record must be processed
+    /// then: the repeated task re-executes the buffer from the start, and partial processing would insert
+    /// records twice.
+    if (executionCtx.getOpenReturnState() == OpenReturnState::REPEAT)
+    {
+        return;
+    }
     /// iterate over records in buffer
     auto numberOfRecords = recordBuffer.getNumRecords();
     for (nautilus::val<uint64_t> i = uint64_t{0}; i < numberOfRecords; i = i + uint64_t{1})

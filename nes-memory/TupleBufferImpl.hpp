@@ -98,6 +98,8 @@ public:
     void setOriginId(OriginId originId);
     void setCreationTimestamp(Timestamp timestamp);
     [[nodiscard]] Timestamp getCreationTimestamp() const noexcept;
+    void setMinTimestamp(Timestamp timestamp);
+    [[nodiscard]] Timestamp getMinTimestamp() const noexcept;
     [[nodiscard]] ChildBufferIndex storeChildBuffer(BufferControlBlock* control);
     [[nodiscard]] bool loadChildBuffer(ChildBufferIndex index, BufferControlBlock*& control, uint8_t*& ptr, uint32_t& size) const;
 
@@ -114,6 +116,9 @@ private:
     ChunkNumber chunkNumber = INVALID_CHUNK_NUMBER;
     bool lastChunk = true;
     Timestamp creationTimestamp = Timestamp(Timestamp::INITIAL_VALUE);
+    /// Smallest event timestamp among this buffer's records, stamped by the watermark assigners (the
+    /// watermark field carries the largest). Like creationTimestamp, it does not cross network hops.
+    Timestamp minTimestamp = Timestamp(Timestamp::INITIAL_VALUE);
     OriginId originId = INVALID_ORIGIN_ID;
     std::vector<MemorySegment*> children;
 

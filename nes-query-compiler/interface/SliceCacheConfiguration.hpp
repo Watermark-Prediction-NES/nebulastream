@@ -43,7 +43,21 @@ public:
            "false",
            "Reuse garbage-collected and race-discarded slices from a per-store pool instead of destroying and reallocating them."};
 
+    BoolOption enableSliceGroupCreation
+        = {"enable_slice_group_creation",
+           "false",
+           "Elect one worker thread to create groups of slices ahead of the stream while other threads defer their buffers. Forces the "
+           "watermark assigner into its own pipeline so the buffer's min/max event timestamps reach the window build."};
+    UIntOption maxSliceGroupSize
+        = {"max_slice_group_size",
+           "64",
+           "Upper bound on the number of slices one winner creates ahead of the stream in a single group.",
+           {std::make_shared<NonZeroValidation>()}};
+
 private:
-    std::vector<BaseOption*> getOptions() override { return {&enableSliceCache, &numberOfEntries, &enableSliceRecycling}; }
+    std::vector<BaseOption*> getOptions() override
+    {
+        return {&enableSliceCache, &numberOfEntries, &enableSliceRecycling, &enableSliceGroupCreation, &maxSliceGroupSize};
+    }
 };
 }

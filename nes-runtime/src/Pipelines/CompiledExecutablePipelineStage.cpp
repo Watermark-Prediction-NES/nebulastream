@@ -14,6 +14,7 @@
 #include <Pipelines/CompiledExecutablePipelineStage.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <ostream>
@@ -84,10 +85,11 @@ void CompiledExecutablePipelineStage::registerPipelineFunction(nautilus::engine:
             }
             case OpenReturnState::REPEAT: {
                 nautilus::invoke(
-                    +[](PipelineExecutionContext* pec, const TupleBuffer* buffer)
-                    { pec->repeatTask(*buffer, std::chrono::milliseconds(0)); },
+                    +[](PipelineExecutionContext* pec, const TupleBuffer* buffer, const uint64_t delayMs)
+                    { pec->repeatTask(*buffer, std::chrono::milliseconds{delayMs}); },
                     pipelineExecutionContext,
-                    recordBufferRef);
+                    recordBufferRef,
+                    ctx.repeatDelayMs);
                 break;
             }
         }

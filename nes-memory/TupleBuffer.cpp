@@ -133,6 +133,16 @@ Timestamp TupleBuffer::getCreationTimestampInMS() const noexcept
     return controlBlock->getCreationTimestamp();
 }
 
+Timestamp TupleBuffer::getMinTimestamp() const noexcept
+{
+    return controlBlock->getMinTimestamp();
+}
+
+void TupleBuffer::setMinTimestamp(const Timestamp value) noexcept
+{
+    controlBlock->setMinTimestamp(value);
+}
+
 void TupleBuffer::setSequenceNumber(const SequenceNumber sequenceNumber) noexcept
 {
     controlBlock->setSequenceNumber(sequenceNumber);

@@ -282,6 +282,13 @@ public:
     [[nodiscard]] const std::optional<OperatorHandlerId>& getHandlerId() const;
     [[nodiscard]] PipelineLocation getPipelineLocation() const;
 
+    /// Requests a pipeline break AFTER this operator: the pipelining phase closes the pipeline with a
+    /// default emit and starts the next operator in a fresh pipeline behind a default scan. Used when a
+    /// downstream operator must read this operator's buffer metadata, which only crosses such a boundary.
+    void forcePipelineBreakAfter() { pipelineBreakAfter = true; }
+
+    [[nodiscard]] bool breaksPipelineAfter() const { return pipelineBreakAfter; }
+
 private:
     PhysicalOperator physicalOperator;
     std::optional<MemoryLayoutType> inputMemoryLayoutType;
@@ -293,6 +300,7 @@ private:
     std::optional<std::shared_ptr<OperatorHandler>> handler;
     std::optional<OperatorHandlerId> handlerId;
     PipelineLocation pipelineLocation;
+    bool pipelineBreakAfter{false};
 };
 }
 
