@@ -98,6 +98,33 @@ HashMapSlice::getOrCreateHashMapBufferRef(AbstractBufferProvider& bufferProvider
     return &hashMapBuffers[pos];
 }
 
+bool HashMapSlice::resetForReuse()
+{
+    /// State reduction re-reduces a slice once the probe unpins it, so a slice can still be reduced at
+    /// garbage collection. Its buffers are gone (serializeState released them), so it cannot be reused.
+    if (reduced)
+    {
+        return false;
+    }
+    for (uint64_t pos = 0; pos < numHashMaps; ++pos)
+    {
+        if (hashMapBuffersState[pos] == HashMapBufferState::INITIALIZED)
+        {
+            ChainedHashMap::load(hashMapBuffers[pos]).clear();
+        }
+    }
+    return true;
+}
+
+bool HashMapSlice::matchesLayout(
+    const CreateNewHashMapSliceArgs& args, const uint64_t numberOfHashMaps, const uint64_t numberOfInputStreams) const
+{
+    return numHashmapsPerInputStream == numberOfHashMaps and numInputStreams == numberOfInputStreams and params.keySize == args.keySize
+        and params.valueSize == args.valueSize and params.pageSize == args.pageSize
+        and ChainedHashMap::calculateBufferSizeFromBuckets(params.numberOfBuckets)
+        == ChainedHashMap::calculateBufferSizeFromBuckets(args.numberOfBuckets);
+}
+
 uint64_t HashMapSlice::residentBytes() const
 {
     return SliceStateCodec::residentBytes(hashMapBuffers);

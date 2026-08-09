@@ -91,6 +91,15 @@ public:
     void serializeState(std::vector<std::byte>& out) override;
     void deserializeState(std::span<const std::byte> in, AbstractBufferProvider& bufferProvider) override;
 
+    /// Clears every initialized hash map in place, keeping the allocated buffers for the next tenant.
+    /// The slot vectors are never resized: the slice cache holds const TupleBuffer* into them.
+    [[nodiscard]] bool resetForReuse() override;
+
+    /// True iff this slice is interchangeable with a slice freshly created from args: same slot layout and
+    /// the same frozen hash map geometry. Bucket counts compare by the buffer size ChainedHashMap derives
+    /// from them, as counts that quantize to the same capacity produce identical maps.
+    [[nodiscard]] bool matchesLayout(const CreateNewHashMapSliceArgs& args, uint64_t numberOfHashMaps, uint64_t numberOfInputStreams) const;
+
 protected:
     /// We use this private struct to store the CreateNewHashMapSliceArgs parameters in a trivially-copyable way, that is also embedded in the header.
     struct HashMapSliceParams

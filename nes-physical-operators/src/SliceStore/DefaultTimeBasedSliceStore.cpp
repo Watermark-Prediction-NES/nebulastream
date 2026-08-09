@@ -50,7 +50,32 @@ DefaultTimeBasedSliceStore::DefaultTimeBasedSliceStore(
     , sliceAssigner(windowSize, windowSlide)
     , sequenceNumber(SequenceNumber::INITIAL)
     , numberOfActiveInputPipelines(0)
+    , slicePoolCapacity(std::max<uint64_t>(windowSize / windowSlide, 1))
+    , sliceRecyclingEnabled(this->sliceCacheConfiguration.enableSliceRecycling.getValue())
 {
+}
+
+void DefaultTimeBasedSliceStore::setOnSliceRetired(std::function<void(SliceEnd)> callback)
+{
+    onSliceRetired = std::move(callback);
+}
+
+void DefaultTimeBasedSliceStore::poolRetiredSlice(std::shared_ptr<Slice> slice, const bool pristine)
+{
+    /// A slice that is still referenced elsewhere (e.g. a trigger buffer in flight) must not get a new
+    /// tenant; it simply dies the normal way once the last reference drops.
+    if (not sliceRecyclingEnabled or slice.use_count() != 1)
+    {
+        return;
+    }
+    if (not pristine and not slice->resetForReuse())
+    {
+        return;
+    }
+    if (const auto pool = slicePool.wlock(); pool->size() < slicePoolCapacity)
+    {
+        pool->push_back(std::move(slice));
+    }
 }
 
 DefaultTimeBasedSliceStore::~DefaultTimeBasedSliceStore()
@@ -58,8 +83,8 @@ DefaultTimeBasedSliceStore::~DefaultTimeBasedSliceStore()
     deleteState();
 }
 
-std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreate(
-    const Timestamp timestamp, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice)
+std::vector<std::shared_ptr<Slice>>
+DefaultTimeBasedSliceStore::getSlicesOrCreate(const Timestamp timestamp, const SliceCreateFunction& createNewSlice)
 {
     /// We first check, if the slice already exist in the slice store
     const auto sliceStart = sliceAssigner.getSliceStartTs(timestamp);
@@ -72,13 +97,25 @@ std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreat
         }
     }
 
+    /// Offer the create function a retired slice to reuse; it decides whether the candidate fits and
+    /// simply drops it otherwise.
+    std::shared_ptr<Slice> recycledCandidate;
+    if (sliceRecyclingEnabled)
+    {
+        if (const auto pool = slicePool.wlock(); not pool->empty())
+        {
+            recycledCandidate = std::move(pool->back());
+            pool->pop_back();
+        }
+    }
+
     /// The current thread has not found a slice, so we need to create one.
     /// It might have happened that another thread acquires the lock before the current thread is finished creating the new slices.
     /// But by not locking the slice store, we reduce the time the current thread holds the lock, increasing the performance.
     /// Therefore, we need to perform another check.
     /// The creation is timed outside of any lock scope, so the measurement never inflates lock hold times.
     const auto creationStart = std::chrono::steady_clock::now();
-    const auto newSlices = createNewSlice(sliceStart, sliceEnd);
+    auto newSlices = createNewSlice(sliceStart, sliceEnd, recycledCandidate);
     const auto creationDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - creationStart);
     createdSlices.fetch_add(1, std::memory_order_relaxed);
     sliceCreationNanos.fetch_add(creationDuration.count(), std::memory_order_relaxed);
@@ -87,7 +124,15 @@ std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreat
     if (slicesWriteLocked->contains(sliceEnd))
     {
         wastedSliceCreations.fetch_add(1, std::memory_order_relaxed);
-        return {slicesWriteLocked->find(sliceEnd)->second};
+        /// The loser's freshly built (or freshly reused) slice never became visible to anyone: pool it as
+        /// pristine inventory. Do NOT fire onSliceRetired here — its slice end is the winner's live slice.
+        const auto winner = slicesWriteLocked->find(sliceEnd)->second;
+        slicesWriteLocked.unlock();
+        windowsWriteLocked.unlock();
+        /// The recycled candidate may still hold the same slice; drop it first so the pool sees the only reference.
+        recycledCandidate.reset();
+        poolRetiredSlice(std::move(newSlices[0]), true);
+        return {winner};
     }
 
     /// At this moment, we can be sure that no slice exists and we can insert the newly created slice into the slice store
@@ -289,8 +334,16 @@ void DefaultTimeBasedSliceStore::garbageCollectSlicesAndWindows(const Timestamp 
         }
     }
 
-    /// Now we can remove/call destructor on every slice without still holding the lock
-    slicesToDelete.clear();
+    /// Every gathered slice's identity dies here. Outside all locks: the retirement callback and the
+    /// data structure reset are the time-consuming parts, and any slice not pooled destructs right away.
+    for (auto& slice : slicesToDelete)
+    {
+        if (onSliceRetired)
+        {
+            onSliceRetired(slice->getSliceEnd());
+        }
+        poolRetiredSlice(std::move(slice), false);
+    }
 }
 
 void DefaultTimeBasedSliceStore::deleteState()
@@ -298,6 +351,7 @@ void DefaultTimeBasedSliceStore::deleteState()
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     slicesWriteLocked->clear();
     windowsWriteLocked->clear();
+    slicePool.wlock()->clear();
 }
 
 void DefaultTimeBasedSliceStore::incrementNumberOfInputPipelines()

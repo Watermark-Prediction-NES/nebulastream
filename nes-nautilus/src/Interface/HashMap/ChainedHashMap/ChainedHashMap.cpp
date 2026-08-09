@@ -284,8 +284,9 @@ void ChainedHashMap::appendPage(AbstractBufferProvider* bufferProvider)
 
 AbstractHashMapEntry* ChainedHashMap::insertEntry(const HashFunction::HashValue::raw_type hash, AbstractBufferProvider* bufferProvider)
 {
-    /// 1. Check if we need to allocate a new page
-    if (getTotalNumberOfRecords() % getEntriesPerPage() == 0)
+    /// 1. Check if we need to allocate a new page. A cleared map (see clear()) still owns its old pages,
+    /// so a page boundary only requires an append once all existing pages are exhausted.
+    if (getTotalNumberOfRecords() % getEntriesPerPage() == 0 and getTotalNumberOfRecords() / getEntriesPerPage() >= getNumberOfPages())
     {
         /// create new page and append it
         appendPage(bufferProvider);
@@ -399,6 +400,33 @@ ChainedHashMapEntry* ChainedHashMap::getChain(uint64_t pos)
 {
     auto chainsArray = chains();
     return chainsArray[pos];
+}
+
+void ChainedHashMap::clear()
+{
+    PRECONDITION(getStatus() == VALID_CHM, "Hash map must be valid to be cleared.");
+
+    const auto numberOfChains = getNumberOfChains();
+    auto chainsArray = chains();
+    std::ranges::fill(chainsArray, nullptr);
+    /// Same self-referential end sentinel init() writes; see rebuildChains().
+    chainsArray[numberOfChains]
+        = reinterpret_cast<ChainedHashMapEntry*>(&chainsArray[numberOfChains]); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+
+    /// All pages are retained: entry pages are refilled in order by insertEntry, var-sized pages track
+    /// their fill level in numberOfTuples. Var-sized allocation only ever appends to the last page, so
+    /// cleared earlier var-sized pages stay empty until the map is destroyed.
+    const auto numberOfPages = getNumberOfPages();
+    for (uint64_t pageIdx = 0; pageIdx < numberOfPages; ++pageIdx)
+    {
+        getPage(pageIdx).setNumberOfTuples(0);
+    }
+    const auto numberOfVarSizedPages = getNumberOfVarSizedPages();
+    for (uint64_t pageIdx = 0; pageIdx < numberOfVarSizedPages; ++pageIdx)
+    {
+        getVarSizedPage(pageIdx).setNumberOfTuples(0);
+    }
+    header().numRecords = 0;
 }
 
 void ChainedHashMap::rebuildChains()

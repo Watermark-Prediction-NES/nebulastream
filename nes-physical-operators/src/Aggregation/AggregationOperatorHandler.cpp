@@ -54,8 +54,7 @@ AggregationOperatorHandler::AggregationOperatorHandler(
 {
 }
 
-std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
-AggregationOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const
+SliceCreateFunction AggregationOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const
 {
     PRECONDITION(
         numberOfWorkerThreads > 0, "Number of worker threads not set for window based operator. Was setWorkerThreads() being called?");
@@ -63,8 +62,16 @@ AggregationOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArgu
     newHashMapArgs.numberOfBuckets = std::clamp(rollingAverageNumberOfKeys.rlock()->getAverage(), 1UL, maxNumberOfBuckets);
     return std::function(
         [outputOriginId = outputOriginId, numberOfWorkerThreads = numberOfWorkerThreads, copyOfNewHashMapArgs = newHashMapArgs](
-            SliceStart sliceStart, SliceEnd sliceEnd) -> std::vector<std::shared_ptr<Slice>>
+            SliceStart sliceStart,
+            SliceEnd sliceEnd,
+            const std::shared_ptr<Slice>& recycledCandidate) -> std::vector<std::shared_ptr<Slice>>
         {
+            if (auto candidate = std::dynamic_pointer_cast<AggregationSlice>(recycledCandidate);
+                candidate and candidate->matchesLayout(copyOfNewHashMapArgs, numberOfWorkerThreads, 1))
+            {
+                candidate->reassign(sliceStart, sliceEnd);
+                return {std::move(candidate)};
+            }
             NES_TRACE("Creating new aggregation slice with for slice {}-{} for output origin {}", sliceStart, sliceEnd, outputOriginId);
             return {std::make_shared<AggregationSlice>(sliceStart, sliceEnd, copyOfNewHashMapArgs, numberOfWorkerThreads)};
         });
