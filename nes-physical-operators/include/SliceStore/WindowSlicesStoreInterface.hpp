@@ -57,12 +57,24 @@ struct WindowInfoAndSequenceNumber
     bool operator<(const WindowInfoAndSequenceNumber& other) const { return windowInfo < other.windowInfo; }
 };
 
+/// Lifetime counters of a slice store, logged once when the owning operator stops
+struct SliceStoreStatistics
+{
+    uint64_t createdSlices{0};
+    /// Slices that were fully built but discarded because another thread created the same slice concurrently
+    uint64_t wastedSliceCreations{0};
+    uint64_t sliceCreationNanos{0};
+};
+
 /// This is the interface for storing windows and slices in a window-based operator
 /// It provides an interface to operate on slices and windows for a time-based window operator, e.g., join or aggregation
 class WindowSlicesStoreInterface
 {
 public:
     virtual ~WindowSlicesStoreInterface() = default;
+
+    [[nodiscard]] virtual SliceStoreStatistics getStatistics() const { return {}; }
+
     /// Retrieves the slices that corresponds to the timestamp. If no slices exist for the timestamp, they are created by calling the method createNewSlice
     virtual std::vector<std::shared_ptr<Slice>>
     getSlicesOrCreate(Timestamp timestamp, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice)

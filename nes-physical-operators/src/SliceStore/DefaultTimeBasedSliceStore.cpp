@@ -15,6 +15,8 @@
 #include <SliceStore/DefaultTimeBasedSliceStore.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -74,11 +76,17 @@ std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSlicesOrCreat
     /// It might have happened that another thread acquires the lock before the current thread is finished creating the new slices.
     /// But by not locking the slice store, we reduce the time the current thread holds the lock, increasing the performance.
     /// Therefore, we need to perform another check.
+    /// The creation is timed outside of any lock scope, so the measurement never inflates lock hold times.
+    const auto creationStart = std::chrono::steady_clock::now();
     const auto newSlices = createNewSlice(sliceStart, sliceEnd);
+    const auto creationDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - creationStart);
+    createdSlices.fetch_add(1, std::memory_order_relaxed);
+    sliceCreationNanos.fetch_add(creationDuration.count(), std::memory_order_relaxed);
     INVARIANT(newSlices.size() == 1, "We assume that only one slice is created per timestamp for our default time-based slice store.");
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     if (slicesWriteLocked->contains(sliceEnd))
     {
+        wastedSliceCreations.fetch_add(1, std::memory_order_relaxed);
         return {slicesWriteLocked->find(sliceEnd)->second};
     }
 
@@ -300,6 +308,14 @@ void DefaultTimeBasedSliceStore::incrementNumberOfInputPipelines()
 uint64_t DefaultTimeBasedSliceStore::getWindowSize() const
 {
     return sliceAssigner.getWindowSize();
+}
+
+SliceStoreStatistics DefaultTimeBasedSliceStore::getStatistics() const
+{
+    return {
+        .createdSlices = createdSlices.load(std::memory_order_relaxed),
+        .wastedSliceCreations = wastedSliceCreations.load(std::memory_order_relaxed),
+        .sliceCreationNanos = sliceCreationNanos.load(std::memory_order_relaxed)};
 }
 
 std::span<std::byte> DefaultTimeBasedSliceStore::allocateSpaceForSliceCache(
