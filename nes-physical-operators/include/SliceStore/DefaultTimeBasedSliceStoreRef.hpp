@@ -46,8 +46,7 @@ public:
     /// Extracts the operator-specific data structure (TupleBuffer) from a Slice.
     using DataStructureExtractor = std::function<const TupleBuffer*(Slice&, WorkerThreadId, AbstractBufferProvider&)>;
 
-    /// The function that creates new slices given a start and end timestamp.
-    using SliceCreateFunction = std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>;
+    /// Builds the operator-specific SliceCreateFunction (declared in Slice.hpp) for a cache miss.
     using CreateSlicesFunction = std::function<SliceCreateFunction(WindowBasedOperatorHandler&, AbstractBufferProvider&)>;
 
     explicit DefaultTimeBasedSliceStoreRef(

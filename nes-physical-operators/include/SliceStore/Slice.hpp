@@ -15,6 +15,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
 #include <Time/Timestamp.hpp>
 
 namespace NES
@@ -57,6 +60,14 @@ public:
     [[nodiscard]] SliceStart getSliceStart() const;
     [[nodiscard]] SliceEnd getSliceEnd() const;
 
+    /// Gives a retired slice a new identity so it can be reused for a different time range.
+    /// Only a slice-creation function may call this, and only for slices that no probe can reach anymore.
+    void reassign(SliceStart newSliceStart, SliceEnd newSliceEnd);
+
+    /// Empties the slice's data structures in place so it can serve a new time range, keeping allocated
+    /// memory. Returns false if this slice type cannot be reset (it must be destroyed instead).
+    [[nodiscard]] virtual bool resetForReuse() { return false; }
+
     bool operator==(const Slice& rhs) const;
     bool operator!=(const Slice& rhs) const;
 
@@ -64,4 +75,9 @@ protected:
     SliceStart sliceStart;
     SliceEnd sliceEnd;
 };
+
+/// Creates the slices for [sliceStart, sliceEnd). recycledCandidate may hold a retired slice from the
+/// slice store's pool; the function may reassign and return it instead of allocating, if and only if it
+/// structurally matches what the function would have created. A rejected candidate is simply dropped.
+using SliceCreateFunction = std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd, const std::shared_ptr<Slice>&)>;
 }

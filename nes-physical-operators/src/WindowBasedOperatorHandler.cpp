@@ -60,6 +60,11 @@ WindowBasedOperatorHandler::WindowBasedOperatorHandler(
     , outputOriginId(outputOriginId)
     , inputOrigins(inputOrigins)
 {
+    /// The moment a slice's identity dies (garbage collection retires it, whether it is destroyed or
+    /// recycled), the manager's per-slice-end bookkeeping must die with it: a recycled slice would
+    /// otherwise leave pinned entries and spill files behind under its old end, and a later slice with
+    /// the same end would collide with them.
+    this->sliceAndWindowStore->setOnSliceRetired([this](const SliceEnd sliceEnd) { stateReduction->forget(sliceEnd); });
 }
 
 void WindowBasedOperatorHandler::start(PipelineExecutionContext& pipelineExecutionContext, uint32_t)

@@ -38,7 +38,12 @@ public:
            "it should not be necessary to disable the slice cache."};
     UIntOption numberOfEntries = {"number_of_entries_sliceCache", "10", "Size of the slice cache", {std::make_shared<NonZeroValidation>()}};
 
+    BoolOption enableSliceRecycling
+        = {"enable_slice_recycling",
+           "false",
+           "Reuse garbage-collected and race-discarded slices from a per-store pool instead of destroying and reallocating them."};
+
 private:
-    std::vector<BaseOption*> getOptions() override { return {&enableSliceCache, &numberOfEntries}; }
+    std::vector<BaseOption*> getOptions() override { return {&enableSliceCache, &numberOfEntries, &enableSliceRecycling}; }
 };
 }

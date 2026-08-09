@@ -97,8 +97,7 @@ HJOperatorHandler::HJOperatorHandler(
 {
 }
 
-std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
-HJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const
+SliceCreateFunction HJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const
 {
     PRECONDITION(
         numberOfWorkerThreads > 0, "Number of worker threads not set for window based operator. Has setWorkerThreads() being called?");
@@ -116,8 +115,16 @@ HJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& ne
 
     return std::function(
         [outputOriginId = outputOriginId, numberOfWorkerThreads = numberOfWorkerThreads, copyOfNewHashMapArgs = newHashMapArgs](
-            SliceStart sliceStart, SliceEnd sliceEnd) -> std::vector<std::shared_ptr<Slice>>
+            SliceStart sliceStart,
+            SliceEnd sliceEnd,
+            const std::shared_ptr<Slice>& recycledCandidate) -> std::vector<std::shared_ptr<Slice>>
         {
+            if (auto candidate = std::dynamic_pointer_cast<HJSlice>(recycledCandidate);
+                candidate and candidate->matchesLayout(copyOfNewHashMapArgs, numberOfWorkerThreads, 2))
+            {
+                candidate->reassign(sliceStart, sliceEnd);
+                return {std::move(candidate)};
+            }
             NES_TRACE("Creating new hash-join slice for slice {}-{} for output origin {}", sliceStart, sliceEnd, outputOriginId);
             return {std::make_shared<HJSlice>(sliceStart, sliceEnd, copyOfNewHashMapArgs, numberOfWorkerThreads)};
         });
