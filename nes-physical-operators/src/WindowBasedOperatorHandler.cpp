@@ -72,6 +72,14 @@ void WindowBasedOperatorHandler::start(PipelineExecutionContext& pipelineExecuti
 
 void WindowBasedOperatorHandler::stop(QueryTerminationType, PipelineExecutionContext&)
 {
+    /// Systest benchmarks run one query at a time, so per-operator counters at stop are per-query numbers.
+    const auto [created, wasted, creationNanos] = sliceAndWindowStore->getStatistics();
+    NES_INFO(
+        "Slice creation statistics: {} slices created, {} wasted (lost creation race), {:.3f} ms total creation time",
+        created,
+        wasted,
+        static_cast<double>(creationNanos) / 1e6);
+
     /// Last point at which this operator's numbers still exist. Writes one CSV row if a stats path was
     /// configured, and does nothing otherwise; calling it twice writes once.
     stateReduction->writeStats();
