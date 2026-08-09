@@ -25,7 +25,7 @@ class IngestionTimeWatermarkAssignerPhysicalOperator : public PhysicalOperatorCo
 public:
     /// trackMinTs additionally maintains the buffer's minimum event timestamp for slice-group creation.
     /// It is a tracing-time constant: when false, the compiled code is identical to not tracking at all.
-    explicit IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction timeFunction, bool trackMinTs = false);
+    explicit IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction timeFunction, bool trackMinTs);
     void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
     [[nodiscard]] std::optional<PhysicalOperator> getChild() const override;

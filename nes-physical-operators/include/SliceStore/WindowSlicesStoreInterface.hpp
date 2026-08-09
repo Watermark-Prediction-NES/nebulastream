@@ -19,10 +19,12 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
 #include <SliceStore/Slice.hpp>
 #include <Time/Timestamp.hpp>
+#include <folly/Synchronized.h>
 #include <Util.hpp>
 
 namespace NES
@@ -77,10 +79,16 @@ public:
 
     /// Called once for every slice whose identity dies (it is garbage collected), with its old slice end.
     /// Lets the owner drop per-slice-end bookkeeping (e.g. state reduction) before the slice is destroyed or reused.
-    virtual void setOnSliceRetired(std::function<void(SliceEnd)> callback) = 0;
+    void setOnSliceRetired(std::function<void(SliceEnd)> callback) { onSliceRetired = std::move(callback); }
 
     /// Retrieves the slices that corresponds to the timestamp. If no slices exist for the timestamp, they are created by calling the method createNewSlice
     virtual std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(Timestamp timestamp, const SliceCreateFunction& createNewSlice) = 0;
+
+    /// Cooperative slice-group creation for the event-time range [minTs, maxTs] of one buffer.
+    /// Returns 0 if the caller may proceed (all slices exist, or this caller won the claim and created
+    /// them, possibly extended ahead of the stream by watermarkRate); otherwise another thread is
+    /// creating an overlapping range and the returned value is the suggested retry delay in ms.
+    virtual uint64_t claimOrDeferSliceRange(Timestamp, Timestamp, double, const SliceCreateFunction&) { return 0; }
 
     /// Retrieves all slices that can be triggered by the given global watermark
     /// This method returns all slices for each window that can be triggered. It returns the slices for all windows that have been filled and have a window end smaller than the global watermark
@@ -116,5 +124,18 @@ public:
 
     /// Returns the window size
     [[nodiscard]] virtual uint64_t getWindowSize() const = 0;
+
+protected:
+    WindowSlicesStoreInterface(const uint64_t slicePoolCapacity, const bool sliceRecyclingEnabled)
+        : slicePoolCapacity(slicePoolCapacity), sliceRecyclingEnabled(sliceRecyclingEnabled)
+    {
+    }
+
+    /// Retired slices waiting for reuse. Capped at the steady-state number of live slices; excess retirees
+    /// are destroyed. Pooled hash-map slices keep the page high-water mark of their previous tenants.
+    folly::Synchronized<std::vector<std::shared_ptr<Slice>>> slicePool;
+    uint64_t slicePoolCapacity;
+    bool sliceRecyclingEnabled;
+    std::function<void(SliceEnd)> onSliceRetired;
 };
 }

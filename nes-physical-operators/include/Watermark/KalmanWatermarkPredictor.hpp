@@ -40,7 +40,7 @@ public:
 
     [[nodiscard]] Timestamp predictWallClock(Timestamp target) const override;
 
-    [[nodiscard]] double currentRateEstimate() const noexcept { return rateEstimate; }
+    [[nodiscard]] double currentRateEstimate() const override { return initialized ? rateEstimate : 0.0; }
 
 private:
     Config cfg;

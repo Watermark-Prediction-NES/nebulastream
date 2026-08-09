@@ -13,6 +13,7 @@
 */
 
 #pragma once
+#include <chrono>
 #include <memory>
 #include <Time/Timestamp.hpp>
 #include <StateReductionTypes.hpp>
@@ -33,9 +34,20 @@ public:
     /// Returns INVALID_VALUE only when the predictor has insufficient state.
     [[nodiscard]] virtual Timestamp predictWallClock(Timestamp target) const = 0;
 
+    /// The current estimate of the watermark advancement rate in event-time ms per wall-clock ms.
+    /// Returns 0.0 when the predictor has insufficient state.
+    [[nodiscard]] virtual double currentRateEstimate() const = 0;
+
     /// Returns nullptr for NONE, which leaves every slice looking immediately needed and so keeps
     /// state reduction switched off however cheap a reduction looks.
     [[nodiscard]] static std::unique_ptr<WatermarkPredictor> create(WatermarkPredictorType type);
 };
+
+/// Steady-clock milliseconds since epoch: the wall-clock domain every predictor observes and predicts in.
+inline Timestamp predictorWallClockNow()
+{
+    const auto sinceEpoch = std::chrono::steady_clock::now().time_since_epoch();
+    return Timestamp{static_cast<Timestamp::Underlying>(std::chrono::duration_cast<std::chrono::milliseconds>(sinceEpoch).count())};
+}
 
 }

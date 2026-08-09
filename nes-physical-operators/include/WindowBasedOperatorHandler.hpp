@@ -30,6 +30,8 @@
 #include <StateReduction/StateReductionManager.hpp>
 #include <Time/Timestamp.hpp>
 #include <Watermark/MultiOriginWatermarkProcessor.hpp>
+#include <Watermark/WatermarkPredictor.hpp>
+#include <folly/Synchronized.h>
 #include <PipelineExecutionContext.hpp>
 #include <StateReductionConfiguration.hpp>
 
@@ -74,6 +76,9 @@ public:
 
     WindowSlicesStoreInterface& getSliceAndWindowStore() const;
 
+    /// Current watermark advancement rate in event-time ms per wall-clock ms; 0 while the predictor is cold.
+    [[nodiscard]] double currentWatermarkRateEstimate() const;
+
     /// Updates the corresponding watermark processor, and then garbage collects all slices and windows that are not valid anymore.
     void garbageCollectSlicesAndWindows(const BufferMetaData& bufferMetaData) const;
 
@@ -107,6 +112,10 @@ protected:
     void pinSlices(const std::vector<std::shared_ptr<Slice>>& slices, AbstractBufferProvider& bufferProvider) const;
 
     std::unique_ptr<WindowSlicesStoreInterface> sliceAndWindowStore;
+    /// Owned here rather than by StateReductionManager (which borrows it) so that slice-group creation can
+    /// read the watermark rate even when state reduction is off. Declared before the manager: the manager
+    /// receives a pointer to it during construction. The single observe site is checkAndTriggerWindows.
+    folly::Synchronized<std::unique_ptr<WatermarkPredictor>> watermarkPredictor;
     std::unique_ptr<StateReductionManager> stateReduction;
     std::unique_ptr<MultiOriginWatermarkProcessor> watermarkProcessorBuild;
     std::unique_ptr<MultiOriginWatermarkProcessor> watermarkProcessorProbe;
@@ -115,6 +124,8 @@ protected:
     /// only moves occasionally. Enumerating the store's slices is not free, so the decision loop is driven
     /// off actual advances. Atomic because the threads racing here are the point, not an edge case.
     std::atomic<Timestamp::Underlying> lastReductionWatermark{Timestamp::INVALID_VALUE};
+    /// Same advance-gating for feeding the predictor: each watermark value is observed at most once.
+    std::atomic<Timestamp::Underlying> lastObservedWatermark{Timestamp::INVALID_VALUE};
     const OriginId outputOriginId;
     const std::vector<OriginId> inputOrigins;
 };

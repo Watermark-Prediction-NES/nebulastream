@@ -22,6 +22,7 @@ add_nes_physical_operator_test(SliceAssignerTest SliceAssignerTest.cpp)
 add_nes_physical_operator_test(SliceCacheTest SliceCacheTest.cpp)
 add_nes_physical_operator_test(StateReductionTest StateReductionTest.cpp)
 add_nes_physical_operator_test(SliceRecyclingTest SliceRecyclingTest.cpp)
+add_nes_physical_operator_test(SliceGroupCreationTest SliceGroupCreationTest.cpp)
 add_nes_physical_operator_test(ReducibleSliceTest ReducibleSliceTest.cpp)
 
 if (ENABLE_IREE_TESTS)

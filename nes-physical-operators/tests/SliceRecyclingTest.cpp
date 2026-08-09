@@ -18,7 +18,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
+#include <tuple>
 #include <vector>
 
 #include <SliceStore/DefaultTimeBasedSliceStore.hpp>
@@ -26,6 +26,7 @@
 #include <Time/Timestamp.hpp>
 #include <gtest/gtest.h>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 
 namespace NES
 {
@@ -39,11 +40,13 @@ class ResettableSlice final : public Slice
 {
 public:
     ResettableSlice(const SliceStart start, const SliceEnd end) : Slice(start, end) { }
+
     [[nodiscard]] bool resetForReuse() override
     {
         wasReset = true;
         return true;
     }
+
     bool wasReset = false;
 };
 
@@ -54,9 +57,9 @@ public:
     NonResettableSlice(const SliceStart start, const SliceEnd end) : Slice(start, end) { }
 };
 
-SliceCacheConfiguration makeConfig(const bool recyclingEnabled)
+SliceStoreConfiguration makeConfig(const bool recyclingEnabled)
 {
-    SliceCacheConfiguration config;
+    SliceStoreConfiguration config;
     if (recyclingEnabled)
     {
         config.enableSliceRecycling.setValue(true);
@@ -66,6 +69,7 @@ SliceCacheConfiguration makeConfig(const bool recyclingEnabled)
 
 /// offeredCandidates is an optional out-parameter: callers that do not inspect the offers pass nothing, which a reference cannot express.
 template <typename SliceType>
+/// NOLINTNEXTLINE(fuchsia-default-arguments-declarations)
 SliceCreateFunction makeCreateFunction(std::vector<std::shared_ptr<Slice>>* offeredCandidates = nullptr, const bool reuse = true)
 {
     return [offeredCandidates, reuse](
@@ -100,7 +104,7 @@ void createAndRetireSlices(DefaultTimeBasedSliceStore& store, const uint64_t cou
 
 TEST(SliceRecyclingTest, GarbageCollectionOffersRetiredSlicesForReuse)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(true)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(true)};
     createAndRetireSlices<ResettableSlice>(store, 3);
 
     std::vector<std::shared_ptr<Slice>> offered;
@@ -115,7 +119,7 @@ TEST(SliceRecyclingTest, GarbageCollectionOffersRetiredSlicesForReuse)
 
 TEST(SliceRecyclingTest, RejectedCandidatesAreDroppedNotRestocked)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(true)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(true)};
     createAndRetireSlices<ResettableSlice>(store, 1);
 
     std::vector<std::shared_ptr<Slice>> offered;
@@ -132,7 +136,7 @@ TEST(SliceRecyclingTest, RejectedCandidatesAreDroppedNotRestocked)
 
 TEST(SliceRecyclingTest, NonResettableSlicesAreDestroyedAtGarbageCollection)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(true)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(true)};
     createAndRetireSlices<NonResettableSlice>(store, 3);
 
     std::vector<std::shared_ptr<Slice>> offered;
@@ -142,7 +146,7 @@ TEST(SliceRecyclingTest, NonResettableSlicesAreDestroyedAtGarbageCollection)
 
 TEST(SliceRecyclingTest, RecyclingOffNeverPools)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(false)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(false)};
     createAndRetireSlices<ResettableSlice>(store, 3);
 
     std::vector<std::shared_ptr<Slice>> offered;
@@ -152,7 +156,7 @@ TEST(SliceRecyclingTest, RecyclingOffNeverPools)
 
 TEST(SliceRecyclingTest, PoolIsCappedAtSteadyStateSliceCount)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(true)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(true)};
     /// windowSize / windowSlide = 5 is the cap; retire twice as many slices.
     createAndRetireSlices<ResettableSlice>(store, 10);
 
@@ -168,7 +172,7 @@ TEST(SliceRecyclingTest, PoolIsCappedAtSteadyStateSliceCount)
 
 TEST(SliceRecyclingTest, EveryRetiredSliceAnnouncesItsOldSliceEndOnce)
 {
-    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, makeConfig(true)};
+    DefaultTimeBasedSliceStore store{WINDOW_SIZE, WINDOW_SLIDE, SliceCacheConfiguration{}, makeConfig(true)};
     std::vector<SliceEnd> retiredEnds;
     store.setOnSliceRetired([&retiredEnds](const SliceEnd end) { retiredEnds.push_back(end); });
 

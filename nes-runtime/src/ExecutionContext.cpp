@@ -28,6 +28,7 @@
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <Runtime/TupleBuffer.hpp>
+#include <Time/Timestamp.hpp>
 #include <Util/Logger/Logger.hpp>
 #include <nautilus/function.hpp>
 #include <ErrorHandling.hpp>
@@ -63,7 +64,9 @@ ExecutionContext::ExecutionContext(const nautilus::val<PipelineExecutionContext*
     , pipelineMemoryProvider(arena, invoke(getBufferProviderProxy, pipelineContext))
     , originId(INVALID<OriginId>)
     , watermarkTs(uint64_t{0})
-    , minTs(uint64_t{0})
+    /// An unset minTs must not read as "the buffer starts at event time 0": every pipeline stamps
+    /// minTs on emit, but only a tracking watermark assigner ever lowers it to a real value.
+    , minTs(Timestamp(Timestamp::INVALID_VALUE))
     , repeatDelayMs(uint64_t{0})
     , currentTs(uint64_t{0})
     , sequenceNumber(INVALID<SequenceNumber>)

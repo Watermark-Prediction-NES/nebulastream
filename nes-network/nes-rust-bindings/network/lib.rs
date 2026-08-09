@@ -37,6 +37,7 @@ pub mod ffi {
         chunk_number: u64,
         number_of_tuples: u64,
         watermark: u64,
+        min_timestamp: u64,
         last_chunk: bool,
     }
 
@@ -386,6 +387,7 @@ fn receive_buffer(
             sequence_number: buffer.sequence_number as u64,
             origin_id: buffer.origin_id as u64,
             watermark: buffer.watermark as u64,
+            min_timestamp: buffer.min_timestamp as u64,
             chunk_number: buffer.chunk_number as u64,
             number_of_tuples: buffer.number_of_tuples as u64,
             last_chunk: buffer.last_chunk,
@@ -468,6 +470,7 @@ fn send_buffer(
         chunk_number: metadata.chunk_number,
         number_of_tuples: metadata.number_of_tuples,
         watermark: metadata.watermark,
+        min_timestamp: metadata.min_timestamp,
         last_chunk: metadata.last_chunk,
         data: Vec::from(data),
         child_buffers: children.iter().map(|bytes| Vec::from(*bytes)).collect(),

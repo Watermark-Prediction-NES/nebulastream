@@ -117,8 +117,9 @@ private:
     bool lastChunk = true;
     Timestamp creationTimestamp = Timestamp(Timestamp::INITIAL_VALUE);
     /// Smallest event timestamp among this buffer's records, stamped by the watermark assigners (the
-    /// watermark field carries the largest). Like creationTimestamp, it does not cross network hops.
-    Timestamp minTimestamp = Timestamp(Timestamp::INITIAL_VALUE);
+    /// watermark field carries the largest). Defaults to INVALID_VALUE = "unknown": consumers must treat
+    /// an unstamped buffer as having no usable minimum, never as starting at time zero.
+    Timestamp minTimestamp = Timestamp(Timestamp::INVALID_VALUE);
     OriginId originId = INVALID_ORIGIN_ID;
     std::vector<MemorySegment*> children;
 

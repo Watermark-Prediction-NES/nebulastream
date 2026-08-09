@@ -31,6 +31,8 @@ public:
 
     [[nodiscard]] Timestamp predictWallClock(Timestamp target) const override;
 
+    [[nodiscard]] double currentRateEstimate() const override { return hasRateEstimate ? rateEstimate : 0.0; }
+
 private:
     double smoothingFactor;
     double rateEstimate{0.0};
