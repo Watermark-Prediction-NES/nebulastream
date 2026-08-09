@@ -25,6 +25,12 @@ Slice::Slice(Slice&& other) noexcept = default;
 Slice& Slice::operator=(const Slice& other) = default;
 Slice& Slice::operator=(Slice&& other) noexcept = default;
 
+void Slice::reassign(const SliceStart newSliceStart, const SliceEnd newSliceEnd)
+{
+    sliceStart = newSliceStart;
+    sliceEnd = newSliceEnd;
+}
+
 SliceStart Slice::getSliceStart() const
 {
     return sliceStart;

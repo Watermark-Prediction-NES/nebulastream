@@ -63,8 +63,7 @@ public:
         JoinTriggerStrategy triggerStrategy,
         const StateReductionConfiguration& stateReductionConfiguration);
 
-    [[nodiscard]] std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
-    getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const override;
+    [[nodiscard]] SliceCreateFunction getCreateNewSlicesFunction(const CreateNewSlicesArguments& newSlicesArguments) const override;
 
     bool wasSetupCalled(const JoinBuildSideType& buildSide);
 

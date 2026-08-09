@@ -58,8 +58,8 @@ public:
     DefaultTimeBasedSliceStore(uint64_t windowSize, uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration);
 
     ~DefaultTimeBasedSliceStore() override;
-    std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(
-        Timestamp timestamp, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice) override;
+    std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(Timestamp timestamp, const SliceCreateFunction& createNewSlice) override;
+    void setOnSliceRetired(std::function<void(SliceEnd)> callback) override;
     std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>>
     getTriggerableWindowSlices(Timestamp globalWatermark) override;
     std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> getAllNonTriggeredSlices() override;
@@ -99,6 +99,16 @@ private:
     std::atomic<uint64_t> createdSlices{0};
     std::atomic<uint64_t> wastedSliceCreations{0};
     std::atomic<uint64_t> sliceCreationNanos{0};
+
+    /// Retired slices waiting for reuse. Capped at the steady-state number of live slices; excess retirees
+    /// are destroyed. Pooled hash-map slices keep the page high-water mark of their previous tenants.
+    folly::Synchronized<std::vector<std::shared_ptr<Slice>>> slicePool;
+    uint64_t slicePoolCapacity;
+    bool sliceRecyclingEnabled;
+    std::function<void(SliceEnd)> onSliceRetired;
+
+    /// Pushes the slice into the pool if recycling is on, we hold the only reference, and there is room.
+    void poolRetiredSlice(std::shared_ptr<Slice> slice, bool pristine);
 };
 
 }

@@ -35,6 +35,9 @@ endif()
 add_nes_unit_test(chained-hashmap-restore-unit-tests "UnitTests/ChainedHashMapRestoreTest.cpp")
 target_link_libraries(chained-hashmap-restore-unit-tests nes-nautilus-test-util)
 
+add_nes_unit_test(chained-hashmap-clear-unit-tests "UnitTests/ChainedHashMapClearTest.cpp")
+target_link_libraries(chained-hashmap-clear-unit-tests nes-nautilus-test-util)
+
 add_nes_unit_test(TestTupleBufferTest "TestTupleBufferTest.cpp")
 target_link_libraries(TestTupleBufferTest nes-nautilus-test-util)
 

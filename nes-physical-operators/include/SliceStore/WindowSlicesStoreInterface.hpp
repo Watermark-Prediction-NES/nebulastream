@@ -75,10 +75,12 @@ public:
 
     [[nodiscard]] virtual SliceStoreStatistics getStatistics() const { return {}; }
 
+    /// Called once for every slice whose identity dies (it is garbage collected), with its old slice end.
+    /// Lets the owner drop per-slice-end bookkeeping (e.g. state reduction) before the slice is destroyed or reused.
+    virtual void setOnSliceRetired(std::function<void(SliceEnd)> callback) = 0;
+
     /// Retrieves the slices that corresponds to the timestamp. If no slices exist for the timestamp, they are created by calling the method createNewSlice
-    virtual std::vector<std::shared_ptr<Slice>>
-    getSlicesOrCreate(Timestamp timestamp, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice)
-        = 0;
+    virtual std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(Timestamp timestamp, const SliceCreateFunction& createNewSlice) = 0;
 
     /// Retrieves all slices that can be triggered by the given global watermark
     /// This method returns all slices for each window that can be triggered. It returns the slices for all windows that have been filled and have a window end smaller than the global watermark

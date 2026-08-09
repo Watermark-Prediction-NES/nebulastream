@@ -148,6 +148,10 @@ public:
     /// on a live map is a no-op in effect but pointless work.
     void rebuildChains();
 
+    /// Empties the map while keeping all of its memory: chains are nulled, the record count drops to 0,
+    /// and every entry and var-sized page is retained with its fill level reset, ready for reuse.
+    void clear();
+
     /// @warning Be super careful with this. Sometimes you need a pointer to the TupleBuffer but you should never alter it outside of this
     /// view and without using its access methods
     [[nodiscard]] TupleBuffer* getBuffer() { return std::addressof(buffer); }

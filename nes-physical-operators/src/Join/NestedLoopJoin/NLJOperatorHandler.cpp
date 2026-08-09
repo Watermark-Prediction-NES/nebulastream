@@ -48,8 +48,7 @@ NLJOperatorHandler::NLJOperatorHandler(
 {
 }
 
-std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>
-NLJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& args) const
+SliceCreateFunction NLJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& args) const
 {
     PRECONDITION(
         numberOfWorkerThreads > 0, "Number of worker threads not set for window based operator. Was setWorkerThreads() being called?");
@@ -58,8 +57,19 @@ NLJOperatorHandler::getCreateNewSlicesFunction(const CreateNewSlicesArguments& a
         [numberOfWorkerThreads = numberOfWorkerThreads,
          bufferProvider = nljArgs.bufferProvider,
          tupleSizeLeft = nljArgs.tupleSizeLeft,
-         tupleSizeRight = nljArgs.tupleSizeRight](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
-        { return {std::make_shared<NLJSlice>(*bufferProvider, start, end, numberOfWorkerThreads, tupleSizeLeft, tupleSizeRight)}; });
+         tupleSizeRight = nljArgs.tupleSizeRight](
+            SliceStart start, SliceEnd end, const std::shared_ptr<Slice>& recycledCandidate) -> std::vector<std::shared_ptr<Slice>>
+        {
+            /// NLJ slices never reach the pool through garbage collection (combinePagedVectors is
+            /// destructive), so a pooled NLJ slice is always a pristine race discard from this store,
+            /// built with these exact per-store parameters.
+            if (auto candidate = std::dynamic_pointer_cast<NLJSlice>(recycledCandidate))
+            {
+                candidate->reassign(start, end);
+                return {std::move(candidate)};
+            }
+            return {std::make_shared<NLJSlice>(*bufferProvider, start, end, numberOfWorkerThreads, tupleSizeLeft, tupleSizeRight)};
+        });
 }
 
 void NLJOperatorHandler::emitSlicesToProbe(
