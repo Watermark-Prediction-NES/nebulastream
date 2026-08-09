@@ -42,7 +42,7 @@ LoweringRuleResultSubgraph LowerToPhysicalIngestionTimeWatermarkAssigner::apply(
     const auto outputSchema = createPhysicalOutputSchema(traitSet);
     const auto inputSchema = createPhysicalOutputSchema(assignOp->getChild().getTraitSet());
 
-    const auto groupCreationEnabled = conf.sliceCacheConfiguration.enableSliceGroupCreation.getValue();
+    const auto groupCreationEnabled = conf.sliceStoreConfiguration.enableSliceGroupCreation.getValue();
     auto physicalOperator = IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction(), groupCreationEnabled);
     auto wrapper
         = std::make_shared<PhysicalOperatorWrapper>(physicalOperator, inputSchema, outputSchema, memoryLayoutType, memoryLayoutType);

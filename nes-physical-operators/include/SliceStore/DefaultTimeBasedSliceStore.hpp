@@ -13,7 +13,10 @@
 */
 
 #pragma once
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -35,10 +38,41 @@
 #include <SliceStore/SliceStoreRef.hpp>
 #include <Time/Timestamp.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 
 namespace NES
 {
 
+
+/// How many slices one winner should create for a claim: the missing slices of its buffer plus however
+/// many the stream will demand while creation itself runs, so creation stays ahead of arrival.
+/// watermarkRate is event-time ms per wall-clock ms; f is the fraction of one slide the stream advances
+/// per created slice. Rate or cost of 0 (cold predictor, no measurements yet) means no speculation.
+[[nodiscard]] inline uint64_t computeSliceGroupSize(
+    const uint64_t neededSlices,
+    const double watermarkRate,
+    const uint64_t creationCostNanos,
+    const uint64_t slideMs,
+    const uint64_t maxGroupSize)
+{
+    if (neededSlices >= maxGroupSize)
+    {
+        return maxGroupSize;
+    }
+    if (watermarkRate <= 0.0 or creationCostNanos == 0 or slideMs == 0)
+    {
+        return neededSlices;
+    }
+    const double creationCostMs = static_cast<double>(creationCostNanos) / 1e6;
+    const double advancePerSlice = watermarkRate * creationCostMs / static_cast<double>(slideMs);
+    if (advancePerSlice >= 1.0)
+    {
+        /// The stream outruns creation: creating can never catch up, so create as much as allowed.
+        return maxGroupSize;
+    }
+    const auto total = static_cast<uint64_t>(std::ceil(static_cast<double>(neededSlices) / (1.0 - advancePerSlice)));
+    return std::clamp(total, neededSlices, maxGroupSize);
+}
 
 /// This struct stores a slice ptr and the state. We require this information, as we have to know the state of a slice for a given window
 struct SlicesAndState
@@ -55,11 +89,16 @@ struct SlicesAndState
 class DefaultTimeBasedSliceStore final : public WindowSlicesStoreInterface
 {
 public:
-    DefaultTimeBasedSliceStore(uint64_t windowSize, uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration);
+    DefaultTimeBasedSliceStore(
+        uint64_t windowSize,
+        uint64_t windowSlide,
+        SliceCacheConfiguration sliceCacheConfiguration,
+        SliceStoreConfiguration sliceStoreConfiguration);
 
     ~DefaultTimeBasedSliceStore() override;
     std::vector<std::shared_ptr<Slice>> getSlicesOrCreate(Timestamp timestamp, const SliceCreateFunction& createNewSlice) override;
-    void setOnSliceRetired(std::function<void(SliceEnd)> callback) override;
+    uint64_t
+    claimOrDeferSliceRange(Timestamp minTs, Timestamp maxTs, double watermarkRate, const SliceCreateFunction& createNewSlice) override;
     std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>>
     getTriggerableWindowSlices(Timestamp globalWatermark) override;
     std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> getAllNonTriggeredSlices() override;
@@ -80,6 +119,7 @@ public:
 
 private:
     SliceCacheConfiguration sliceCacheConfiguration;
+    SliceStoreConfiguration sliceStoreConfiguration;
     folly::Synchronized<std::unordered_map<PipelineId, std::unique_ptr<TupleBuffer>>> pipelineIdToSliceCacheStarts;
 
     /// We need to store the windows and slices in two separate maps. This is necessary as we need to access the slices during the join build phase,
@@ -99,13 +139,25 @@ private:
     std::atomic<uint64_t> createdSlices{0};
     std::atomic<uint64_t> wastedSliceCreations{0};
     std::atomic<uint64_t> sliceCreationNanos{0};
+    /// Rolling estimate of what one getSlicesOrCreate creation costs; feeds the group sizing.
+    std::atomic<uint64_t> ewmaCreationNanos{0};
 
-    /// Retired slices waiting for reuse. Capped at the steady-state number of live slices; excess retirees
-    /// are destroyed. Pooled hash-map slices keep the page high-water mark of their previous tenants.
-    folly::Synchronized<std::vector<std::shared_ptr<Slice>>> slicePool;
-    uint64_t slicePoolCapacity;
-    bool sliceRecyclingEnabled;
-    std::function<void(SliceEnd)> onSliceRetired;
+    /// Event-time ranges some thread is currently creating slices for. A claim lives only within one
+    /// claimOrDeferSliceRange call, which is what makes the losers' retry condition guaranteed to clear.
+    struct InFlightRange
+    {
+        uint64_t claimId{};
+        Timestamp rangeStart{0};
+        Timestamp rangeEnd{0};
+        std::chrono::steady_clock::time_point expectedCompletion;
+    };
+
+    folly::Synchronized<std::vector<InFlightRange>> inFlightRanges;
+    std::atomic<uint64_t> nextClaimId{0};
+
+    /// The collector's horizon. Group creation must not create slices below it: recreating one resurrects a
+    /// window that has already been triggered. Only moves forward, so a stale read is merely conservative.
+    std::atomic<Timestamp::Underlying> lastGcWatermark{0};
 
     /// Pushes the slice into the pool if recycling is on, we hold the only reference, and there is room.
     void poolRetiredSlice(std::shared_ptr<Slice> slice, bool pristine);

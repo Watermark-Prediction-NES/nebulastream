@@ -27,6 +27,7 @@
 #include <Util/ExecutionMode.hpp>
 #include <BloomFilterConfiguration.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 #include <StateReductionConfiguration.hpp>
 
 namespace NES
@@ -74,6 +75,8 @@ public:
 
     BloomFilterConfiguration bloomFilterConfiguration = {"bloom_filter", "Configuration for the hash maps' in-map BloomFilter"};
 
+    SliceStoreConfiguration sliceStoreConfiguration = {"slice_store", "Configuration for the slice store"};
+
     StateReductionConfiguration stateReductionConfiguration
         = {"state_reduction", "Configuration for compressing and spilling the state of windowed operators"};
 
@@ -88,6 +91,7 @@ private:
             &operatorBufferSize,
             &sliceCacheConfiguration,
             &bloomFilterConfiguration,
+            &sliceStoreConfiguration,
             &stateReductionConfiguration};
     }
 };

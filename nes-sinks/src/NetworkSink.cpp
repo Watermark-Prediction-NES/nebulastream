@@ -122,6 +122,7 @@ void NetworkSink::execute(const TupleBuffer& inputBuffer, PipelineExecutionConte
             .chunk_number = currentBuffer->getChunkNumber().getRawValue(),
             .number_of_tuples = currentBuffer->getNumberOfTuples(),
             .watermark = currentBuffer->getWatermark().getRawValue(),
+            .min_timestamp = currentBuffer->getMinTimestamp().getRawValue(),
             .last_chunk = currentBuffer->isLastChunk()};
 
         /// Set child buffers

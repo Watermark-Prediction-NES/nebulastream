@@ -25,6 +25,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <Identifiers/Identifiers.hpp>
@@ -41,23 +42,26 @@
 #include <folly/Synchronized.h>
 #include <ErrorHandling.hpp>
 #include <SliceCacheConfiguration.hpp>
+#include <SliceStoreConfiguration.hpp>
 
 namespace NES
 {
 DefaultTimeBasedSliceStore::DefaultTimeBasedSliceStore(
-    const uint64_t windowSize, const uint64_t windowSlide, SliceCacheConfiguration sliceCacheConfiguration)
-    : sliceCacheConfiguration(std::move(sliceCacheConfiguration))
+    const uint64_t windowSize,
+    const uint64_t windowSlide,
+    SliceCacheConfiguration sliceCacheConfiguration,
+    SliceStoreConfiguration sliceStoreConfiguration)
+    /// A configured capacity of 0 means "as many slices as are alive in the steady state".
+    : WindowSlicesStoreInterface{
+          sliceStoreConfiguration.slicePoolCapacity.getValue() != 0 ? sliceStoreConfiguration.slicePoolCapacity.getValue()
+                                                                    : std::max<uint64_t>(windowSize / windowSlide, 1),
+          sliceStoreConfiguration.enableSliceRecycling.getValue()}
+    , sliceCacheConfiguration(std::move(sliceCacheConfiguration))
+    , sliceStoreConfiguration(std::move(sliceStoreConfiguration))
     , sliceAssigner(windowSize, windowSlide)
     , sequenceNumber(SequenceNumber::INITIAL)
     , numberOfActiveInputPipelines(0)
-    , slicePoolCapacity(std::max<uint64_t>(windowSize / windowSlide, 1))
-    , sliceRecyclingEnabled(this->sliceCacheConfiguration.enableSliceRecycling.getValue())
 {
-}
-
-void DefaultTimeBasedSliceStore::setOnSliceRetired(std::function<void(SliceEnd)> callback)
-{
-    onSliceRetired = std::move(callback);
 }
 
 void DefaultTimeBasedSliceStore::poolRetiredSlice(std::shared_ptr<Slice> slice, const bool pristine)
@@ -119,6 +123,10 @@ DefaultTimeBasedSliceStore::getSlicesOrCreate(const Timestamp timestamp, const S
     const auto creationDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - creationStart);
     createdSlices.fetch_add(1, std::memory_order_relaxed);
     sliceCreationNanos.fetch_add(creationDuration.count(), std::memory_order_relaxed);
+    /// Racy read-modify-write is fine: this is a smoothed hint for group sizing, not an exact counter.
+    const auto previousEwma = ewmaCreationNanos.load(std::memory_order_relaxed);
+    const auto sample = static_cast<uint64_t>(creationDuration.count());
+    ewmaCreationNanos.store(previousEwma == 0 ? sample : (previousEwma * 7 + sample) / 8, std::memory_order_relaxed);
     INVARIANT(newSlices.size() == 1, "We assume that only one slice is created per timestamp for our default time-based slice store.");
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     if (slicesWriteLocked->contains(sliceEnd))
@@ -154,6 +162,107 @@ DefaultTimeBasedSliceStore::getSlicesOrCreate(const Timestamp timestamp, const S
     }
 
     return {newSlice};
+}
+
+uint64_t DefaultTimeBasedSliceStore::claimOrDeferSliceRange(
+    const Timestamp minTs, const Timestamp maxTs, const double watermarkRate, const SliceCreateFunction& createNewSlice)
+{
+    PRECONDITION(minTs <= maxTs, "Range start {} must not exceed range end {}", minTs, maxTs);
+
+    /// Clamp to the collector's horizon. An out-of-order buffer's minTs can sit below it, and recreating a
+    /// slice there re-emplaces its collected window in WINDOW_FILLING, past the EMITTED_TO_PROBE guard: the
+    /// window triggers twice and the probe gets a slice the next collection frees underneath it.
+    /// Collection retires a slice once sliceEnd + windowSize < watermark, so starting at
+    /// gcWatermark - windowSize keeps every slice created here above the horizon.
+    auto claimMinTs = minTs;
+    if (const auto gcWatermark = lastGcWatermark.load(std::memory_order_relaxed); gcWatermark > sliceAssigner.getWindowSize())
+    {
+        if (const auto oldestLiveSliceEnd = gcWatermark - sliceAssigner.getWindowSize(); claimMinTs.getRawValue() < oldestLiveSliceEnd)
+        {
+            claimMinTs = Timestamp(oldestLiveSliceEnd);
+        }
+    }
+    if (claimMinTs > maxTs)
+    {
+        /// The whole buffer is behind the horizon. Its records are late; per-tuple creation deals with them.
+        return 0;
+    }
+
+    /// A buffer whose range spans absurdly many slices (a symptom of unstamped or corrupt metadata, not
+    /// of real data) must not send us iterating slice by slice over it; per-tuple creation handles it.
+    const auto spanSlices = ((maxTs.getRawValue() - claimMinTs.getRawValue()) / sliceAssigner.getWindowSlide()) + 1;
+    if (spanSlices > 10 * sliceStoreConfiguration.maxSliceGroupSize.getValue())
+    {
+        return 0;
+    }
+
+    /// Fast path: one read lock to see whether the buffer's range is already fully covered.
+    uint64_t missingSlices = 0;
+    {
+        const auto slicesReadLocked = slices.rlock();
+        for (auto ts = claimMinTs; ts <= maxTs; ts = sliceAssigner.getSliceEndTs(ts))
+        {
+            if (not slicesReadLocked->contains(sliceAssigner.getSliceEndTs(ts)))
+            {
+                ++missingSlices;
+            }
+        }
+    }
+    if (missingSlices == 0)
+    {
+        return 0;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto creationCostNanos = ewmaCreationNanos.load(std::memory_order_relaxed);
+    const auto groupSize = computeSliceGroupSize(
+        missingSlices,
+        watermarkRate,
+        creationCostNanos,
+        sliceAssigner.getWindowSlide(),
+        sliceStoreConfiguration.maxSliceGroupSize.getValue());
+    const auto claimMaxTs = Timestamp(maxTs.getRawValue() + ((groupSize - missingSlices) * sliceAssigner.getWindowSlide()));
+
+    uint64_t claimId = 0;
+    {
+        const auto rangesWriteLocked = inFlightRanges.wlock();
+        for (const auto& range : *rangesWriteLocked)
+        {
+            if (range.rangeStart <= maxTs and claimMinTs <= range.rangeEnd)
+            {
+                /// Another thread is already creating an overlapping range: retry roughly when it is done.
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(range.expectedCompletion - now).count();
+                return static_cast<uint64_t>(std::max<int64_t>(remaining, 1));
+            }
+        }
+        claimId = nextClaimId.fetch_add(1, std::memory_order_relaxed);
+        rangesWriteLocked->push_back(InFlightRange{
+            .claimId = claimId,
+            .rangeStart = claimMinTs,
+            .rangeEnd = claimMaxTs,
+            .expectedCompletion = now + std::chrono::nanoseconds{groupSize * creationCostNanos}});
+    }
+
+    /// The claim must clear whatever happens below; a stuck claim would make every deferring thread
+    /// retry forever and block a graceful query stop.
+    struct ClaimReleaser
+    {
+        DefaultTimeBasedSliceStore& store;
+        uint64_t claimId;
+
+        ~ClaimReleaser()
+        {
+            std::erase_if(*store.inFlightRanges.wlock(), [&](const auto& range) { return range.claimId == claimId; });
+        }
+    };
+
+    const ClaimReleaser releaseClaim{.store = *this, .claimId = claimId};
+
+    for (auto ts = claimMinTs; ts <= claimMaxTs; ts = sliceAssigner.getSliceEndTs(ts))
+    {
+        std::ignore = getSlicesOrCreate(ts, createNewSlice);
+    }
+    return 0;
 }
 
 std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>>
@@ -278,6 +387,16 @@ std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> Defau
 
 void DefaultTimeBasedSliceStore::garbageCollectSlicesAndWindows(const Timestamp newGlobalWaterMark)
 {
+    /// Publish before collecting, so a concurrent claim clamps against this pass rather than the previous
+    /// one. Threads collect at different watermarks, hence the max: the horizon must never move backwards.
+    {
+        auto previousHorizon = lastGcWatermark.load(std::memory_order_relaxed);
+        while (previousHorizon < newGlobalWaterMark.getRawValue()
+               and not lastGcWatermark.compare_exchange_weak(previousHorizon, newGlobalWaterMark.getRawValue(), std::memory_order_relaxed))
+        {
+        }
+    }
+
     std::vector<std::shared_ptr<Slice>> slicesToDelete;
     {
         NES_TRACE("Performing garbage collection for new global watermark {}", newGlobalWaterMark);
@@ -394,7 +513,8 @@ std::span<std::byte> DefaultTimeBasedSliceStore::allocateSpaceForSliceCache(
 std::unique_ptr<SliceStoreRef> DefaultTimeBasedSliceStore::createSliceStoreRef(
     DefaultTimeBasedSliceStoreRef::DataStructureExtractor extractor, DefaultTimeBasedSliceStoreRef::CreateSlicesFunction creator)
 {
-    return std::make_unique<DefaultTimeBasedSliceStoreRef>(sliceCacheConfiguration, this, std::move(extractor), std::move(creator));
+    return std::make_unique<DefaultTimeBasedSliceStoreRef>(
+        sliceCacheConfiguration, sliceStoreConfiguration, this, std::move(extractor), std::move(creator));
 }
 
 }

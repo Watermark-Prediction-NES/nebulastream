@@ -65,6 +65,14 @@ void AggregationProbePhysicalOperator::open(ExecutionContext& executionCtx, Reco
     const nautilus::val<Timestamp> windowStart{readValueFromMemRef<uint64_t>(getMemberRef(windowInfoRef, &WindowInfo::windowStart))};
     const nautilus::val<Timestamp> windowEnd{readValueFromMemRef<uint64_t>(getMemberRef(windowInfoRef, &WindowInfo::windowEnd))};
 
+    /// A window whose slices were all created ahead of the stream and never received a tuple carries no
+    /// hash maps: there is nothing to lower, and close() still emits the empty result buffer so the
+    /// sequence number reaches the downstream watermark processor.
+    if (numberOfHashMaps == 0)
+    {
+        return;
+    }
+
     /// create final hash map and pin it. Its sizing is the same as the per-worker maps it merges, and that is
     /// a query-compile-time constant, so it comes from hashMapConfig rather than being read back out of one
     /// of the input maps. The proxy takes the numbers individually: a non-capturing lambda cannot receive the

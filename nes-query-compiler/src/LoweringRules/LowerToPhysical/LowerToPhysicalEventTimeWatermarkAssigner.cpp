@@ -45,7 +45,7 @@ LoweringRuleResultSubgraph LowerToPhysicalEventTimeWatermarkAssigner::apply(Logi
 
     const auto physicalFunction = QueryCompilation::FunctionProvider::lowerFunction(
         assignerOp->getOnField(), *assignerOp->getChild()->getTraitSet().get<FieldMappingTrait>());
-    const auto groupCreationEnabled = conf.sliceCacheConfiguration.enableSliceGroupCreation.getValue();
+    const auto groupCreationEnabled = conf.sliceStoreConfiguration.enableSliceGroupCreation.getValue();
     auto physicalOperator
         = EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction(physicalFunction, assignerOp->getUnit()), groupCreationEnabled);
 
