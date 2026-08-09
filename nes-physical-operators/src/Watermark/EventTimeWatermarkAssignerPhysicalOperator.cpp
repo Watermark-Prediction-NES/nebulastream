@@ -27,22 +27,35 @@
 namespace NES
 {
 
-EventTimeWatermarkAssignerPhysicalOperator::EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction timeFunction)
-    : timeFunction(std::move(timeFunction)) { };
+EventTimeWatermarkAssignerPhysicalOperator::EventTimeWatermarkAssignerPhysicalOperator(
+    EventTimeFunction timeFunction, const bool trackMinTs)
+    : timeFunction(std::move(timeFunction)), trackMinTs(trackMinTs) { };
 
 void EventTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     openChild(executionCtx, recordBuffer);
     executionCtx.watermarkTs = nautilus::val<Timestamp>(Timestamp(Timestamp::INITIAL_VALUE));
+    if (trackMinTs)
+    {
+        executionCtx.minTs = nautilus::val<Timestamp>(Timestamp(Timestamp::INVALID_VALUE));
+    }
     timeFunction.open(executionCtx, recordBuffer);
 }
 
 void EventTimeWatermarkAssignerPhysicalOperator::execute(ExecutionContext& ctx, Record& record) const
 {
+    /// The watermark is the running max of the buffer's event timestamps; minTs is the running min.
     const auto tsField = timeFunction.getTs(ctx, record);
     if (tsField > ctx.watermarkTs)
     {
         ctx.watermarkTs = tsField;
+    }
+    if (trackMinTs)
+    {
+        if (tsField < ctx.minTs)
+        {
+            ctx.minTs = tsField;
+        }
     }
     /// call next operator
     executeChild(ctx, record);

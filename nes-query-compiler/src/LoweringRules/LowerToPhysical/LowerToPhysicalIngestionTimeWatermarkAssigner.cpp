@@ -42,9 +42,16 @@ LoweringRuleResultSubgraph LowerToPhysicalIngestionTimeWatermarkAssigner::apply(
     const auto outputSchema = createPhysicalOutputSchema(traitSet);
     const auto inputSchema = createPhysicalOutputSchema(assignOp->getChild().getTraitSet());
 
-    auto physicalOperator = IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction());
+    const auto groupCreationEnabled = conf.sliceCacheConfiguration.enableSliceGroupCreation.getValue();
+    auto physicalOperator = IngestionTimeWatermarkAssignerPhysicalOperator(IngestionTimeFunction(), groupCreationEnabled);
     auto wrapper
         = std::make_shared<PhysicalOperatorWrapper>(physicalOperator, inputSchema, outputSchema, memoryLayoutType, memoryLayoutType);
+    /// See LowerToPhysicalEventTimeWatermarkAssigner: slice-group creation needs the min/max timestamps
+    /// as buffer metadata in the window build's open(), which requires an emit/scan boundary here.
+    if (groupCreationEnabled)
+    {
+        wrapper->forcePipelineBreakAfter();
+    }
 
     /// Creates a physical leaf for each logical leaf. Required, as this operator can have any number of sources.
     std::vector leaves(logicalOperator.getChildren().size(), wrapper);

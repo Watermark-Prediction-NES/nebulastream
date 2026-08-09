@@ -26,7 +26,9 @@ class TimeFunction;
 class EventTimeWatermarkAssignerPhysicalOperator : public PhysicalOperatorConcept
 {
 public:
-    explicit EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction timeFunction);
+    /// trackMinTs additionally maintains the buffer's minimum event timestamp for slice-group creation.
+    /// It is a tracing-time constant: when false, the compiled code is identical to not tracking at all.
+    explicit EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction timeFunction, bool trackMinTs = false);
     void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
     void close(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
@@ -35,6 +37,7 @@ public:
 
 private:
     EventTimeFunction timeFunction;
+    bool trackMinTs;
     std::optional<PhysicalOperator> child;
 };
 

@@ -64,6 +64,10 @@ public:
     nautilus::val<Timestamp> getWatermarkTs();
     void setWatermarkTs(const nautilus::val<Timestamp>& watermarkTs);
 
+    /// Smallest event timestamp among this buffer's records; the watermark carries the largest.
+    nautilus::val<Timestamp> getMinTs();
+    void setMinTs(const nautilus::val<Timestamp>& minTs);
+
     /// Get the creation timestamp of the underlying tuple buffer. The creation timestamp is the point in time when the tuple buffer was created.
     nautilus::val<Timestamp> getCreatingTs();
     void setCreationTs(const nautilus::val<Timestamp>& creationTs);

@@ -45,10 +45,20 @@ LoweringRuleResultSubgraph LowerToPhysicalEventTimeWatermarkAssigner::apply(Logi
 
     const auto physicalFunction = QueryCompilation::FunctionProvider::lowerFunction(
         assignerOp->getOnField(), *assignerOp->getChild()->getTraitSet().get<FieldMappingTrait>());
-    auto physicalOperator = EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction(physicalFunction, assignerOp->getUnit()));
+    const auto groupCreationEnabled = conf.sliceCacheConfiguration.enableSliceGroupCreation.getValue();
+    auto physicalOperator
+        = EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction(physicalFunction, assignerOp->getUnit()), groupCreationEnabled);
 
     const auto wrapper
         = std::make_shared<PhysicalOperatorWrapper>(physicalOperator, inputSchema, outputSchema, memoryLayoutType, memoryLayoutType);
+    /// With slice-group creation the window build's open() must see the min/max event timestamps this
+    /// operator computes. They travel as buffer metadata, which only crosses an emit/scan boundary, so a
+    /// pipeline break is forced after the assigner instead of fusing it with the build. Without the flag,
+    /// nothing here changes: no min tracking, no break — the compiled query is the current version.
+    if (groupCreationEnabled)
+    {
+        wrapper->forcePipelineBreakAfter();
+    }
 
     /// Creates a physical leaf for each logical leaf. Required, as this operator can have any number of sources.
     std::vector leaves(logicalOperator.getChildren().size(), wrapper);

@@ -110,6 +110,9 @@ struct ExecutionContext final
     PipelineMemoryProvider pipelineMemoryProvider;
     nautilus::val<OriginId> originId; /// Stores the current origin id of the incoming tuple buffer. This is set in the scan.
     nautilus::val<Timestamp> watermarkTs; /// Stores the watermark timestamp of the incoming tuple buffer. This is set in the scan.
+    nautilus::val<Timestamp>
+        minTs; /// Smallest event timestamp of the incoming tuple buffer. Set in the scan, refined by the watermark assigners.
+    nautilus::val<uint64_t> repeatDelayMs; /// Delay for re-enqueueing this task when open() returns REPEAT.
     nautilus::val<Timestamp> currentTs; /// Stores the current timestamp. This is set by a time function
     nautilus::val<SequenceNumber> sequenceNumber; /// Stores the sequence number id of the incoming tuple buffer. This is set in the scan.
     nautilus::val<ChunkNumber> chunkNumber; /// Stores the chunk number of the incoming tuple buffer. This is set in the scan.
