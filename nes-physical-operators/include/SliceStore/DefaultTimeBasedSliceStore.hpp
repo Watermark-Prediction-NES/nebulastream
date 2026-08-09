@@ -69,6 +69,7 @@ public:
     void deleteState() override;
     void incrementNumberOfInputPipelines() override;
     uint64_t getWindowSize() const override;
+    [[nodiscard]] SliceStoreStatistics getStatistics() const override;
     std::span<std::byte>
     allocateSpaceForSliceCache(uint64_t sliceCacheMemorySize, PipelineId pipelineId, AbstractBufferProvider& bufferProvider);
 
@@ -94,6 +95,10 @@ private:
     /// If a window build operator appears in multiple pipelines, it may get terminated multiple times
     /// We need to track how many input pipelines have not terminated yet, to only release pending slices after the last termination
     std::atomic<uint64_t> numberOfActiveInputPipelines;
+
+    std::atomic<uint64_t> createdSlices{0};
+    std::atomic<uint64_t> wastedSliceCreations{0};
+    std::atomic<uint64_t> sliceCreationNanos{0};
 };
 
 }
