@@ -21,26 +21,28 @@
 namespace NES
 {
 
-/// Samples `1.0 - getNumOfPooledBuffers() / capacity`. Holds a reference to an AbstractBufferProvider
-/// owned by the operator handler; the sensor's lifetime must not outlive the provider.
+/// Samples pool occupancy as `1.0 - available / pooled`, i.e. 0.0 with an untouched pool and 1.0 once
+/// every pooled buffer is handed out. Holds a reference to an AbstractBufferProvider owned by the
+/// operator handler; the sensor's lifetime must not outlive the provider.
 class BufferPoolPressureSensor final : public MemoryPressureSensor
 {
 public:
-    BufferPoolPressureSensor(AbstractBufferProvider& provider, std::size_t capacity) noexcept
-        : provider(provider), capacity(capacity == 0 ? 1 : capacity)
-    {
-    }
+    explicit BufferPoolPressureSensor(AbstractBufferProvider& provider) noexcept : provider(provider) { }
 
     [[nodiscard]] double sample() const noexcept override
     {
-        const auto free = static_cast<double>(provider.getNumOfPooledBuffers());
-        const auto pressure = 1.0 - (free / static_cast<double>(capacity));
+        const auto pooled = provider.getNumOfPooledBuffers();
+        if (pooled == 0)
+        {
+            return 0.0;
+        }
+        const auto available = static_cast<double>(provider.getNumberOfAvailableBuffers());
+        const auto pressure = 1.0 - (available / static_cast<double>(pooled));
         return pressure < 0.0 ? 0.0 : (pressure > 1.0 ? 1.0 : pressure);
     }
 
 private:
     AbstractBufferProvider& provider;
-    std::size_t capacity;
 };
 
 }

@@ -44,6 +44,11 @@ public:
     virtual size_t getNumOfPooledBuffers() const = 0;
     virtual size_t getNumOfUnpooledBuffers() const = 0;
 
+    /// Number of pooled buffers currently free. Together with getNumOfPooledBuffers() this yields the
+    /// pool's occupancy, which the spill subsystem samples as memory pressure. May be approximate:
+    /// an exact count would require a global lock on the free list.
+    virtual size_t getNumberOfAvailableBuffers() const = 0;
+
     virtual TupleBuffer getBufferBlocking() = 0;
 
     virtual std::optional<TupleBuffer> getBufferNoBlocking() = 0;

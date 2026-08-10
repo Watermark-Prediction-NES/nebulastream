@@ -92,7 +92,7 @@ std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::wrapWithSpill(
         return inner;
     }
 
-    auto sensor = std::make_unique<BufferPoolPressureSensor>(*bufferProvider, /*capacity*/ bufferProvider->getBufferSize());
+    auto sensor = std::make_unique<BufferPoolPressureSensor>(*bufferProvider);
 
     return std::make_unique<SpillingTimeBasedSliceStore>(
         std::move(inner), std::move(policy), std::move(backend), std::move(sensor), *bufferProvider, *serializer);

@@ -12,7 +12,12 @@
     limitations under the License.
 */
 
+#include <cstdint>
+#include <vector>
+#include <Runtime/BufferManager.hpp>
+#include <Runtime/TupleBuffer.hpp>
 #include <SliceStore/Slice.hpp>
+#include <SliceStore/Spill/BufferPoolPressureSensor.hpp>
 #include <SliceStore/Spill/ConstantPressureSensor.hpp>
 #include <SliceStore/Spill/NeverSpillPolicy.hpp>
 #include <SliceStore/Spill/SpillPolicy.hpp>
@@ -67,6 +72,34 @@ TEST_F(SpillPolicyContractTest, ConstantPressureSensorReturnsSetValue)
     EXPECT_DOUBLE_EQ(sensor.sample(), 0.42);
     sensor.set(0.99);
     EXPECT_DOUBLE_EQ(sensor.sample(), 0.99);
+}
+
+/// Regression: the sensor used to divide the *total* pool size by the buffer size in *bytes*, so it
+/// reported a constant 0.0 and no slice was ever spilled. Pressure must track pool occupancy.
+TEST_F(SpillPolicyContractTest, BufferPoolPressureRisesAsPooledBuffersAreConsumed)
+{
+    constexpr uint64_t NumOfBuffers = 16;
+    auto bufferManager = BufferManager::create(/*bufferSize*/ 4096, NumOfBuffers);
+    const BufferPoolPressureSensor sensor{*bufferManager};
+
+    EXPECT_DOUBLE_EQ(sensor.sample(), 0.0);
+
+    std::vector<TupleBuffer> held;
+    for (uint64_t i = 0; i < NumOfBuffers / 2; ++i)
+    {
+        held.push_back(bufferManager->getBufferBlocking());
+    }
+    EXPECT_DOUBLE_EQ(sensor.sample(), 0.5);
+
+    while (held.size() < NumOfBuffers)
+    {
+        held.push_back(bufferManager->getBufferBlocking());
+    }
+    EXPECT_DOUBLE_EQ(sensor.sample(), 1.0);
+
+    /// Returning the buffers must relieve the pressure again.
+    held.clear();
+    EXPECT_DOUBLE_EQ(sensor.sample(), 0.0);
 }
 
 }
