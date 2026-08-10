@@ -26,6 +26,7 @@
 #include <SliceStore/Spill/MemoryPressureSensor.hpp>
 #include <SliceStore/Spill/SliceStateSerializer.hpp>
 #include <SliceStore/Spill/SpillPolicy.hpp>
+#include <SliceStore/Spill/SpillStats.hpp>
 #include <SliceStore/Spill/StorageBackend.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Time/Timestamp.hpp>
@@ -82,6 +83,9 @@ public:
     /// Test-only: returns the number of currently-spilled slices.
     [[nodiscard]] std::size_t numSpilledSlices() const noexcept;
 
+    /// Live counters for this store. Read by SpillStatsRegistry's sampler and by tests.
+    [[nodiscard]] const SpillStatistics& statistics() const noexcept { return stats; }
+
     /// Override the wall-clock source (default: steady_clock ms). Only for tests, to make the
     /// predictor-driven preemptive-create path deterministic.
     void setWallClockSourceForTesting(std::function<Timestamp()> clock);
@@ -126,6 +130,11 @@ private:
     /// Wall-clock source for predictor observations + the create-horizon deadline. steady_clock ms by
     /// default; overridable in tests via setWallClockSourceForTesting.
     std::function<Timestamp()> wallClockNow;
+
+    /// Spill/restore telemetry. Registered with SpillStatsRegistry for the lifetime of this store, so
+    /// it must outlive nothing else here — it is declared before the id that unregisters it.
+    SpillStatistics stats;
+    uint64_t statsRegistrationId{0};
 };
 
 }

@@ -122,8 +122,10 @@ struct QueryStatement
     LogicalPlan plan;
     std::optional<DistributedQueryId> id;
     /// Per-query overrides parsed from `SET (SPILL.* AS ...)`. nullopt (no SPILL options given) means
-    /// "use engine defaults"; populated replaces the engine defaults wholesale — SPILL.* keys not
-    /// listed fall back to the SpillConfiguration POD's own field defaults, not the worker defaults.
+    /// "use engine defaults"; populated replaces the engine defaults for every *policy* knob — SPILL.*
+    /// keys not listed fall back to the SpillConfiguration POD's own field defaults, not the worker
+    /// defaults. Deployment plumbing (spill directory, I/O threads, statistics sink) is exempt and
+    /// stays at worker scope; QueryCompiler::compileQuery performs that overlay.
     std::optional<SpillConfiguration> spillConfig;
 };
 

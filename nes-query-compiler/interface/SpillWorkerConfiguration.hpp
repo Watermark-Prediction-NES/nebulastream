@@ -30,9 +30,15 @@ namespace NES
 /// `worker.default_query_execution.spill.*`. Mirrors the SpillConfiguration POD field-for-field.
 ///
 /// The POD SpillConfiguration stays the per-query lingua franca (it flows through the SQL binder and
-/// logical plan as a plain copy). This BaseConfiguration is only the engine-default surface: the
-/// QueryCompiler converts it via toSpillConfiguration() and a per-query `SET (SPILL.* AS ...)` clause
-/// still fully overrides it.
+/// logical plan as a plain copy). This BaseConfiguration is the engine-default surface: the
+/// QueryCompiler converts it via toSpillConfiguration(), and a per-query `SET (SPILL.* AS ...)`
+/// clause overrides every *policy* knob on top of it. The deployment fields — spillDirectory,
+/// storageIoThreads, statsLogPath, statsInterval — are deliberately NOT overridable per query and
+/// always come from here; see QueryCompiler::compileQuery.
+///
+/// NOTE: a per-query override only reaches the worker for in-process submission. It is dropped over
+/// gRPC, because grpc/SerializableQueryPlan.proto carries no spill field — so anything submitted via
+/// nes-cli must be configured through these worker options.
 class SpillWorkerConfiguration final : public BaseConfiguration
 {
 public:
@@ -49,6 +55,8 @@ public:
     UIntOption predictionHorizonMs
         = {"prediction_horizon_ms", "50", "Predictive policy: ms ahead the predictor must say a slice triggers to keep it resident."};
     StringOption predictorName = {"predictor", "ewma", "Watermark predictor for the predictive policy (ewma, kalman, robustkalman)."};
+    StringOption statsLogPath = {"stats_log_path", "", "Path to write the spill-statistics CSV; empty disables the sampler (the default)."};
+    UIntOption statsIntervalMs = {"stats_interval_in_ms", "100", "Sampling interval (ms) for the spill-statistics CSV."};
 
     /// Materialise the POD consumed by the lowering rules / SliceStoreFactory.
     [[nodiscard]] SpillConfiguration toSpillConfiguration() const
@@ -62,6 +70,8 @@ public:
             .highMemoryBound = highMemoryBound.getValue(),
             .predictionHorizon = std::chrono::milliseconds{predictionHorizonMs.getValue()},
             .predictorName = predictorName.getValue(),
+            .statsLogPath = statsLogPath.getValue(),
+            .statsInterval = std::chrono::milliseconds{statsIntervalMs.getValue()},
         };
     }
 
@@ -76,7 +86,9 @@ private:
             &storageIoThreads,
             &highMemoryBound,
             &predictionHorizonMs,
-            &predictorName};
+            &predictorName,
+            &statsLogPath,
+            &statsIntervalMs};
     }
 };
 

@@ -37,7 +37,17 @@ std::unique_ptr<CompiledQueryPlan> QueryCompiler::compileQuery(std::unique_ptr<Q
     effectiveConf.spillConfiguration = effectiveConf.spillWorkerConfiguration.toSpillConfiguration();
     if (request->spillOverride.has_value())
     {
-        effectiveConf.spillConfiguration = *request->spillOverride;
+        /// A `SET (SPILL.* AS ...)` clause owns the policy knobs, but not the deployment-level plumbing:
+        /// the spill directory, the I/O thread count and the statistics sink are properties of the
+        /// worker, not of a query, and a query that names any SPILL option must not silently reset them.
+        const auto& override = *request->spillOverride;
+        auto& effective = effectiveConf.spillConfiguration;
+        effective.enabled = override.enabled;
+        effective.policyName = override.policyName;
+        effective.storageBackendName = override.storageBackendName;
+        effective.highMemoryBound = override.highMemoryBound;
+        effective.predictionHorizon = override.predictionHorizon;
+        effective.predictorName = override.predictorName;
     }
     auto queryPlan = LowerToPhysicalOperators::apply(request->queryPlan, effectiveConf);
     auto pipelinedQueryPlan = PipeliningPhase::apply(queryPlan);

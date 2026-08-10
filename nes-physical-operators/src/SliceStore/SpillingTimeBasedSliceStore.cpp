@@ -14,6 +14,7 @@
 
 #include <SliceStore/SpillingTimeBasedSliceStore.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -54,10 +55,14 @@ SpillingTimeBasedSliceStore::SpillingTimeBasedSliceStore(
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         return Timestamp{static_cast<Timestamp::Underlying>(ms)};
     };
+    statsRegistrationId
+        = SpillStatsRegistry::instance().registerStore(SpillStatsRegistry::Registration{.stats = &stats, .policy = spillPolicy.get()});
 }
 
 SpillingTimeBasedSliceStore::~SpillingTimeBasedSliceStore()
 {
+    /// Unregister first: the sampler dereferences `stats` and the policy, both of which die below.
+    SpillStatsRegistry::instance().unregisterStore(statsRegistrationId);
     if (backend)
     {
         backend->waitForCompletion(std::nullopt);
@@ -211,6 +216,12 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
         }
     }
 
+    /// Refresh the gauges once per tick, after this tick's spills have been recorded.
+    const auto spilledNow = spillHandlesBySliceEnd.withRLock([](const auto& map) { return map.size(); });
+    stats.spilledSlices.store(static_cast<uint64_t>(spilledNow), std::memory_order_relaxed);
+    stats.residentSlices.store(
+        static_cast<uint64_t>(liveSlices.size() > spilledNow ? liveSlices.size() - spilledNow : 0), std::memory_order_relaxed);
+
     /// Delegate to inner; inner manages window state machine and erases fully-aged slices.
     inner->garbageCollectSlicesAndWindows(newGlobalWaterMark);
 
@@ -287,22 +298,28 @@ std::size_t SpillingTimeBasedSliceStore::numSpilledSlices() const noexcept
 
 void SpillingTimeBasedSliceStore::restoreSliceSynchronous(Slice& slice, const SpilledSliceHandle& handle)
 {
+    const auto started = std::chrono::steady_clock::now();
     auto fut = serializer.restore(slice, handle, *backend, buffers);
     const auto result = fut.get();
     if (!result.has_value())
     {
         throw CannotDeserialize("SpillingTimeBasedSliceStore: restore failed: {}", result.error().message);
     }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count();
+    stats.addRestore(handle.totalBytes, static_cast<uint64_t>(elapsed));
 }
 
 SpilledSliceHandle SpillingTimeBasedSliceStore::spillSliceSynchronous(Slice& slice)
 {
+    const auto started = std::chrono::steady_clock::now();
     auto fut = serializer.spill(slice, *backend, buffers);
     auto result = fut.get();
     if (!result.has_value())
     {
         throw CannotSerialize("SpillingTimeBasedSliceStore: spill failed: {}", result.error().message);
     }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count();
+    stats.addSpill(result.value().totalBytes, static_cast<uint64_t>(elapsed));
     return std::move(result.value());
 }
 

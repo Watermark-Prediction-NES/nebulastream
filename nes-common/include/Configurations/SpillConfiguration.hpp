@@ -50,6 +50,13 @@ struct SpillConfiguration
     /// Watermark predictor selection for `policyName == "predictive"`. Recognised values: "ewma",
     /// "kalman", "robustkalman". Other policies ignore this field.
     std::string predictorName{"ewma"};
+
+    /// Path for the spill-statistics CSV. Empty disables the sampler entirely (the default), so the
+    /// counters cost nothing but the atomic increments. Mirrors WorkerConfiguration::bufferUsageLogPath.
+    std::string statsLogPath;
+
+    /// Sampling cadence for the spill-statistics CSV.
+    std::chrono::milliseconds statsInterval{100};
 };
 
 }

@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 #include <SliceStore/Spill/SpillPolicy.hpp>
@@ -46,11 +48,19 @@ public:
 
     void observe(Timestamp now, Timestamp globalWatermark) noexcept override;
 
+    [[nodiscard]] SpillPolicyStatistics stats() const noexcept override;
+
 private:
     double highBound;
     std::chrono::milliseconds horizon{0};
     std::unique_ptr<WatermarkPredictor> predictor; /// null => pure-pressure (reactive)
     Timestamp lastObservedWatermark{Timestamp::INVALID_VALUE};
+
+    /// Decision counters. Mutable + atomic because decide() is const and runs on worker threads;
+    /// they are pure telemetry and guard no other state, so relaxed ordering suffices.
+    mutable std::atomic<uint64_t> keptByPrediction{0};
+    mutable std::atomic<uint64_t> spilledPredictorCold{0};
+    mutable std::atomic<uint64_t> spilledBeyondHorizon{0};
 };
 
 }

@@ -51,6 +51,7 @@ SpillDecision PressureSpillPolicy::decide(const SliceSpillContext& ctx, double m
     const Timestamp predictedTrigger = predictor->predictWallClock(ctx.sliceEnd);
     if (predictedTrigger.getRawValue() == Timestamp::INVALID_VALUE)
     {
+        spilledPredictorCold.fetch_add(1, std::memory_order_relaxed);
         return SpillDecision::Spill;
     }
 
@@ -60,14 +61,26 @@ SpillDecision PressureSpillPolicy::decide(const SliceSpillContext& ctx, double m
     const auto predRaw = predictedTrigger.getRawValue();
     if (predRaw <= nowRaw)
     {
+        keptByPrediction.fetch_add(1, std::memory_order_relaxed);
         return SpillDecision::Keep;
     }
     const auto delta = predRaw - nowRaw;
     if (delta > static_cast<uint64_t>(horizon.count()))
     {
+        spilledBeyondHorizon.fetch_add(1, std::memory_order_relaxed);
         return SpillDecision::Spill;
     }
+    keptByPrediction.fetch_add(1, std::memory_order_relaxed);
     return SpillDecision::Keep;
+}
+
+SpillPolicyStatistics PressureSpillPolicy::stats() const noexcept
+{
+    return SpillPolicyStatistics{
+        .keptByPrediction = keptByPrediction.load(std::memory_order_relaxed),
+        .spilledPredictorCold = spilledPredictorCold.load(std::memory_order_relaxed),
+        .spilledBeyondHorizon = spilledBeyondHorizon.load(std::memory_order_relaxed),
+    };
 }
 
 void PressureSpillPolicy::observe(Timestamp now, Timestamp globalWatermark) noexcept

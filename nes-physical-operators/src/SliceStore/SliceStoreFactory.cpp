@@ -27,6 +27,7 @@
 #include <SliceStore/Spill/NLJSliceStateSerializer.hpp>
 #include <SliceStore/Spill/SliceStateSerializer.hpp>
 #include <SliceStore/Spill/SliceStateSerializerRegistry.hpp>
+#include <SliceStore/Spill/SpillStats.hpp>
 #include <SliceStore/Spill/StorageBackend.hpp>
 #include <SliceStore/Spill/StorageBackendRegistry.hpp>
 #include <SliceStore/SpillingTimeBasedSliceStore.hpp>
@@ -93,6 +94,9 @@ std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::wrapWithSpill(
     }
 
     auto sensor = std::make_unique<BufferPoolPressureSensor>(*bufferProvider);
+
+    /// No-op unless a path is configured; repeat calls from other stores are ignored.
+    SpillStatsRegistry::instance().enableCsv(spillConfig.statsLogPath, spillConfig.statsInterval);
 
     return std::make_unique<SpillingTimeBasedSliceStore>(
         std::move(inner), std::move(policy), std::move(backend), std::move(sensor), *bufferProvider, *serializer);
