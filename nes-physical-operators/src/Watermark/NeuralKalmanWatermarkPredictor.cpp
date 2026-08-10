@@ -323,7 +323,7 @@ void NeuralKalmanWatermarkPredictor::observe(const Timestamp watermarkTs, const 
     /// gain so P stays positive and S remains a meaningful normalizer next step.
     watermarkEstimate = predictedWatermark + (gainModWatermark * kalmanGainWatermark * innovation);
     rateEstimate = predictedRate + (gainModRate * kalmanGainRate * innovation);
-    rateEstimate = std::max(rateEstimate, 0.0); // physical floor: watermarks are non-decreasing
+    rateEstimate = std::max(rateEstimate, 0.0); /// physical floor: watermarks are non-decreasing
     varWatermark = (1.0 - kalmanGainWatermark) * predictedVarWatermark;
     covWatermarkRate = (1.0 - kalmanGainWatermark) * predictedCovWatermarkRate;
     varRate = predictedVarRate - (kalmanGainRate * predictedCovWatermarkRate);

@@ -211,13 +211,12 @@ std::vector<PredictionSample> runBenchmark(
                 continue;
             }
             const double signedErr = static_cast<double>(predicted.getRawValue()) - static_cast<double>(trueT->getRawValue());
-            samples.push_back(
-                PredictionSample{
-                    .evalOffset = i - warmup,
-                    .horizon = h,
-                    .absErr = std::abs(signedErr),
-                    .signedErr = signedErr,
-                    .trueWall = static_cast<double>(trueT->getRawValue())});
+            samples.push_back(PredictionSample{
+                .evalOffset = i - warmup,
+                .horizon = h,
+                .absErr = std::abs(signedErr),
+                .signedErr = signedErr,
+                .trueWall = static_cast<double>(trueT->getRawValue())});
         }
     }
     return samples;
@@ -255,8 +254,7 @@ struct BaseTraces
     /// paired with a warmup that spans several cycles, the ML predictors reach scoring already
     /// trained on the full rate repertoire and must keep adapting through it (the short single-
     /// transition traces below never gave them sustained fluctuation to learn from).
-    PiecewiseConstantTraceSource fluctuating{
-        repeatCycle({{100, 100, 50}, {100, 250, 50}, {100, 50, 50}, {100, 0, 50}, {100, 150, 50}}, 6)};
+    PiecewiseConstantTraceSource fluctuating{repeatCycle({{100, 100, 50}, {100, 250, 50}, {100, 50, 50}, {100, 0, 50}, {100, 150, 50}}, 6)};
 
     /// Stall: rate 2.0, then the watermark holds flat (eventStep 0) while wall-clock keeps advancing,
     /// then resumes at 2.0. Warm-up ends at the stall onset so the rolling eval spans the whole stall.
@@ -316,7 +314,8 @@ std::vector<Experiment> buildExperiments()
     experiments.push_back(makeCleanExperiment("Stall(2.0->0) clean warmup-mid-stall", stall, 150, horizons));
     experiments.push_back(makeCleanExperiment("CatchUp(2.0->8.0) clean warmup-mid-stall", catchUp, 125, horizons));
     experiments.push_back(makeNoisyExperiment("Stall(2.0->0) mild jitter warmup-mid-stall", stall, baselineMildJitter, 150, horizons));
-    experiments.push_back(makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter warmup-mid-stall", catchUp, baselineMildJitter, 125, horizons));
+    experiments.push_back(
+        makeNoisyExperiment("CatchUp(2.0->8.0) mild jitter warmup-mid-stall", catchUp, baselineMildJitter, 125, horizons));
 
     /// Stragglers: spike distribution fixed (mean=400, sd=100); sweep over late-fraction.
     const GaussianNoiseModel stragglersMild{
