@@ -24,7 +24,7 @@ CLI:
     --skip-build      Skip cmake configure/build + cargo build (use existing binaries).
     --dry-matrix      Render every (cell × query) topology + SQL and exit. No processes.
     --only=K=V,K=V    Filter the matrix to a single cell. Keys: threads, buffer_size,
-                      no_buffers, spill, var_size, predictor, rate.
+                      no_buffers, spill, var_size, predictor, rate, high_bound, horizon.
 """
 
 from __future__ import annotations
@@ -51,6 +51,25 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 import config as cfg
 
+### Cell-level spill telemetry, derived from spill_stats.csv by summarize_spill_stats(). Kept as its
+### own list so the dry-matrix path can blank exactly these without re-listing them.
+SPILL_RESULT_COLS = [
+    "total_spills",
+    "total_restores",
+    "total_spill_failures",
+    "barrier_misses",
+    "spilled_bytes",
+    "restored_bytes",
+    "kept_by_prediction",
+    "spilled_predictor_cold",
+    "spilled_beyond_horizon",
+    "avg_spill_latency_ms",
+    "avg_restore_latency_ms",
+    "max_restore_latency_ms",
+    "peak_spilled_slices",
+    "spill_stats_samples",
+]
+
 RESULT_COLS = [
     "run_id",
     "cell_slug",
@@ -59,6 +78,8 @@ RESULT_COLS = [
     "no_buffers",
     "spill_variant",
     "predictor",
+    "high_bound",
+    "horizon_ms",
     "var_sized_bytes",
     "ingestion_rate",
     "wall_s",
@@ -68,6 +89,7 @@ RESULT_COLS = [
     "peak_rss_bytes",
     "peak_pooled_used",
     "peak_unpooled_used",
+    *SPILL_RESULT_COLS,
     "failure_reason",
 ]
 
@@ -167,10 +189,22 @@ class RssSampler:
 
 
 def _read_csv_rows(path: Path) -> list[dict]:
+    """Read a monitor CSV, dropping any row that is not fully formed.
+
+    The worker and the RSS sampler are killed while they may be mid-write, so the last line of a
+    monitor CSV is routinely a partial record. DictReader happily yields it with None values for the
+    missing fields, and int(None) then took down the entire sweep at teardown of one cell.
+    """
     if not path.exists():
         return []
     with path.open() as f:
-        return list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        rows = []
+        for row in reader:
+            if None in row or None in row.values() or any(v == "" for v in row.values()):
+                continue  ### short (truncated) or over-long line
+            rows.append(row)
+        return rows
 
 
 def merge_memory_csv(rss_path: Path, buffer_path: Path, out_path: Path) -> tuple[int, int, int]:
@@ -211,6 +245,94 @@ def merge_memory_csv(rss_path: Path, buffer_path: Path, out_path: Path) -> tuple
     return peak_rss, peak_pool, peak_unp
 
 
+### Spill statistics: the C++ SpillStatsRegistry samples one row per slice store per interval into
+### spill_stats.csv. Counters are cumulative per store, so a cell-level total is the sum over stores
+### of each store's LAST sample -- never a sum over rows, which would count every sample again.
+SPILL_STATS_COUNTERS = (
+    "spills",
+    "restores",
+    "spill_failures",
+    "barrier_misses",
+    "spilled_bytes",
+    "restored_bytes",
+    "kept_by_prediction",
+    "spilled_predictor_cold",
+    "spilled_beyond_horizon",
+    "spill_ns_total",
+    "restore_ns_total",
+)
+
+
+def summarize_spill_stats(stats_path: Path) -> dict:
+    """Collapse spill_stats.csv to cell-level aggregates and normalize its timestamps in place.
+
+    Returns zeros for every field when the file is missing or empty, so a cell that never spilled and
+    a cell that was never instrumented are distinguishable only via `spill_stats_samples`.
+    """
+    empty = {
+        "total_spills": 0,
+        "total_restores": 0,
+        "total_spill_failures": 0,
+        "barrier_misses": 0,
+        "spilled_bytes": 0,
+        "restored_bytes": 0,
+        "kept_by_prediction": 0,
+        "spilled_predictor_cold": 0,
+        "spilled_beyond_horizon": 0,
+        "avg_spill_latency_ms": "",
+        "avg_restore_latency_ms": "",
+        "max_restore_latency_ms": "",
+        "peak_spilled_slices": 0,
+        "spill_stats_samples": 0,
+    }
+    rows = _read_csv_rows(stats_path)
+    if not rows:
+        return empty
+
+    ### Last sample per store holds the final cumulative value; the file is written in time order.
+    last_per_store: dict[str, dict] = {}
+    peak_spilled = 0
+    max_restore_ns = 0
+    for r in rows:
+        last_per_store[r["store_id"]] = r
+        peak_spilled = max(peak_spilled, int(r["spilled_slices"]))
+        max_restore_ns = max(max_restore_ns, int(r["restore_ns_max"]))
+
+    ### `or 0` tolerates a results dir written by an older worker that did not yet emit one of these
+    ### columns; a missing counter reads as zero rather than taking down the whole sweep.
+    totals = {c: sum(int(r.get(c) or 0) for r in last_per_store.values()) for c in SPILL_STATS_COUNTERS}
+
+    def mean_ms(total_ns: int, count: int) -> str:
+        return f"{total_ns / count / 1e6:.3f}" if count else ""
+
+    ### Rewrite with normalized timestamps so the notebook can overlay it on memory.csv/throughput.csv.
+    base = min(int(r["timestamp_ms"]) for r in rows)
+    with stats_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["normalized_timestamp_ms", *[k for k in rows[0] if k != "timestamp_ms"]])
+        w.writeheader()
+        for r in rows:
+            out = {k: v for k, v in r.items() if k != "timestamp_ms"}
+            out["normalized_timestamp_ms"] = int(r["timestamp_ms"]) - base
+            w.writerow(out)
+
+    return {
+        "total_spills": totals["spills"],
+        "total_restores": totals["restores"],
+        "total_spill_failures": totals["spill_failures"],
+        "barrier_misses": totals["barrier_misses"],
+        "spilled_bytes": totals["spilled_bytes"],
+        "restored_bytes": totals["restored_bytes"],
+        "kept_by_prediction": totals["kept_by_prediction"],
+        "spilled_predictor_cold": totals["spilled_predictor_cold"],
+        "spilled_beyond_horizon": totals["spilled_beyond_horizon"],
+        "avg_spill_latency_ms": mean_ms(totals["spill_ns_total"], totals["spills"]),
+        "avg_restore_latency_ms": mean_ms(totals["restore_ns_total"], totals["restores"]),
+        "max_restore_latency_ms": f"{max_restore_ns / 1e6:.3f}",
+        "peak_spilled_slices": peak_spilled,
+        "spill_stats_samples": len(rows),
+    }
+
+
 def parse_argv(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--skip-build", action="store_true", help="skip cmake + cargo build")
@@ -247,6 +369,8 @@ class Cell:
     spill: tuple  ### Hashable view of the spill dict for matrix-product purposes
     var_size: int
     rate: int  ### Ingestion rate in tuples/sec per source; 0 = unbounded.
+    high_bound: float  ### Memory-pressure ratio above which the policy spills.
+    horizon_ms: int  ### Predictive policy only: keep-resident look-ahead.
 
     @property
     def spill_dict(self) -> dict:
@@ -256,18 +380,30 @@ class Cell:
     def slug(self) -> str:
         tag = self.spill_dict["tag"]
         rate = "inf" if self.rate == 0 else str(self.rate)
-        return f"t{self.threads}_bs{self.buf_size}_nb{self.no_buffers}_{tag}_v{self.var_size}_r{rate}"
+        base = f"t{self.threads}_bs{self.buf_size}_nb{self.no_buffers}_{tag}_v{self.var_size}_r{rate}"
+        ### Only append the knobs that vary, so slugs stay readable when a sweep pins them.
+        if len(cfg.SPILL_HIGH_BOUND) > 1:
+            base += f"_hb{self.high_bound}"
+        if len(cfg.PREDICTION_HORIZON_MS) > 1 and self.spill_dict.get("policy") == "predictive":
+            base += f"_hz{self.horizon_ms}"
+        return base
 
 
 def matrix() -> Iterator[Cell]:
-    for threads, buf_size, no_buffers, spill, var_size, rate in itertools.product(
+    for threads, buf_size, no_buffers, spill, var_size, rate, high_bound, horizon in itertools.product(
         cfg.NUMBER_OF_WORKER_THREADS,
         cfg.OPERATOR_BUFFER_SIZE,
         cfg.NUMBER_OF_BUFFERS,
         list(expand_spill_variants()),
         cfg.VAR_SIZED_BYTES,
         cfg.INGESTION_RATES,
+        cfg.SPILL_HIGH_BOUND,
+        cfg.PREDICTION_HORIZON_MS,
     ):
+        ### The horizon only exists for the predictive policy; without this the sweep would run
+        ### len(PREDICTION_HORIZON_MS) identical copies of every reactive and every off cell.
+        if spill.get("policy") != "predictive" and horizon != cfg.PREDICTION_HORIZON_MS[0]:
+            continue
         yield Cell(
             threads=threads,
             buf_size=buf_size,
@@ -275,6 +411,8 @@ def matrix() -> Iterator[Cell]:
             spill=tuple(sorted(spill.items())),
             var_size=var_size,
             rate=rate,
+            high_bound=high_bound,
+            horizon_ms=horizon,
         )
 
 
@@ -299,6 +437,10 @@ def apply_only_filter(cells: Iterable[Cell], only: str | None) -> Iterator[Cell]
         if "var_size" in wanted and str(c.var_size) != wanted["var_size"]:
             return False
         if "rate" in wanted and str(c.rate) != wanted["rate"]:
+            return False
+        if "high_bound" in wanted and str(c.high_bound) != wanted["high_bound"]:
+            return False
+        if "horizon" in wanted and str(c.horizon_ms) != wanted["horizon"]:
             return False
         return True
 
@@ -346,7 +488,6 @@ def render_query(
     env: Environment,
     q_index: int,
     window: tuple[int, int],
-    spill: dict,
     cell_dir: Path,
 ) -> Query:
     size_ms, slide_ms = window
@@ -358,7 +499,6 @@ def render_query(
         q_index=q_index,
         size_ms=size_ms,
         slide_ms=slide_ms,
-        spill=spill,
     )
     sql_path = cell_dir / f"q_{q_index}.sql"
     sql_path.write_text(sql)
@@ -419,24 +559,65 @@ def wait_for_ready(proc: subprocess.Popen, timeout_s: float) -> None:
                 return
 
 
-def spawn_worker(threads: int, buf_size: int, no_buffers: int, cell_dir: Path) -> subprocess.Popen:
+def spawn_worker(cell: Cell, cell_dir: Path) -> subprocess.Popen:
+    """Start a worker configured for one cell.
+
+    The spill configuration is passed here, at worker scope, rather than as a per-query
+    `SET (SPILL.* AS ...)` clause: that clause is bound correctly by the parser but dropped at the
+    gRPC boundary (grpc/SerializableQueryPlan.proto carries no spill field), so it never reaches the
+    worker when the query is submitted through nes-cli. One worker per cell means worker scope is the
+    cell's granularity anyway. See templates/query.sql.jinja.
+    """
     log_path = cell_dir / "worker.log"
     log = open(log_path, "w")
-    return subprocess.Popen(
-        [
-            str(cfg.WORKER_BIN),
-            f"--grpc=0.0.0.0:{cfg.GRPC_PORT}",
-            f"--data_address={cfg.DATA_ADDRESS}",
-            f"--worker.query_engine.number_of_worker_threads={threads}",
-            f"--worker.default_query_execution.operator_buffer_size={buf_size}",
-            f"--worker.number_of_buffers_in_global_buffer_manager={no_buffers}",
-            f"--worker.buffer_usage_log_path={cell_dir / 'buffer_usage.csv'}",
-            f"--worker.buffer_usage_monitor_interval_in_ms={cfg.MEMORY_SAMPLE_INTERVAL_MS}",
-        ],
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    sd = cell.spill_dict
+    enabled = bool(sd.get("enabled", False))
+    args = [
+        str(cfg.WORKER_BIN),
+        f"--grpc=0.0.0.0:{cfg.GRPC_PORT}",
+        f"--data_address={cfg.DATA_ADDRESS}",
+        f"--worker.query_engine.number_of_worker_threads={cell.threads}",
+        f"--worker.default_query_execution.operator_buffer_size={cell.buf_size}",
+        f"--worker.number_of_buffers_in_global_buffer_manager={cell.no_buffers}",
+        f"--worker.buffer_usage_log_path={cell_dir / 'buffer_usage.csv'}",
+        f"--worker.buffer_usage_monitor_interval_in_ms={cfg.MEMORY_SAMPLE_INTERVAL_MS}",
+        ### Per-cell spill directory: all cells otherwise share /tmp/nes-spill and accumulate there.
+        f"--worker.default_query_execution.spill.directory={cell_dir / 'spill'}",
+        f"--worker.default_query_execution.spill.stats_log_path={cell_dir / 'spill_stats.csv'}",
+        f"--worker.default_query_execution.spill.stats_interval_in_ms={cfg.MEMORY_SAMPLE_INTERVAL_MS}",
+        f"--worker.default_query_execution.spill.enabled={'true' if enabled else 'false'}",
+    ]
+    if enabled:
+        args += [
+            f"--worker.default_query_execution.spill.policy={sd['policy']}",
+            f"--worker.default_query_execution.spill.backend={sd['backend']}",
+            f"--worker.default_query_execution.spill.high_memory_bound={cell.high_bound}",
+        ]
+        if sd.get("policy") == "predictive":
+            args += [
+                f"--worker.default_query_execution.spill.predictor={sd['predictor']}",
+                f"--worker.default_query_execution.spill.prediction_horizon_ms={cell.horizon_ms}",
+            ]
+    return subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def wait_for_port_free(port: int, timeout_s: float) -> None:
+    """Block until nothing is accepting connections on `port`.
+
+    A cell's worker is SIGTERMed at teardown but keeps its listening socket for a moment after. The
+    next cell's wait_for_grpc would then connect straight to the *dying* worker, declare it ready,
+    and query registration would come back `UNAVAILABLE` — which showed up as roughly every other
+    cell failing with 'nes-cli start exit 1'.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5):
+                pass
+        except OSError:
+            return  ### nothing listening — the previous worker is gone
+        time.sleep(0.25)
+    raise TimeoutError(f"gRPC port {port} still occupied after {timeout_s}s; previous worker did not exit")
 
 
 def wait_for_grpc(port: int, timeout_s: float) -> None:
@@ -492,7 +673,9 @@ def terminate(proc: subprocess.Popen, grace_s: float) -> None:
 
 
 def render_cell_artifacts(cell: Cell, cell_dir: Path, env: Environment) -> list[Query]:
-    return [render_query(env, i, w, cell.spill_dict, cell_dir) for i, w in enumerate(cfg.WINDOWS)]
+    ### The rendered SQL no longer carries the spill configuration — spawn_worker owns it. The cell is
+    ### still passed so the template can be re-parameterised without touching this signature.
+    return [render_query(env, i, w, cell_dir) for i, w in enumerate(cfg.WINDOWS)]
 
 
 def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
@@ -512,7 +695,10 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
         for g in generators:
             wait_for_ready(g, cfg.GENERATOR_READY_TIMEOUT_S)
 
-        worker = spawn_worker(cell.threads, cell.buf_size, cell.no_buffers, cell_dir)
+        ### Must precede the spawn: the port has to be free before this worker binds it, otherwise
+        ### wait_for_grpc below cannot tell this worker from the previous cell's.
+        wait_for_port_free(cfg.GRPC_PORT, cfg.WORKER_READY_TIMEOUT_S)
+        worker = spawn_worker(cell, cell_dir)
         rss_sampler = RssSampler(worker.pid, cell_dir / "rss.csv", cfg.MEMORY_SAMPLE_INTERVAL_MS)
         rss_sampler.start()
         wait_for_grpc(cfg.GRPC_PORT, cfg.WORKER_READY_TIMEOUT_S)
@@ -547,6 +733,14 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
     peak_rss, peak_pool, peak_unp = merge_memory_csv(
         cell_dir / "rss.csv", cell_dir / "buffer_usage.csv", cell_dir / "memory.csv"
     )
+    spill_stats = summarize_spill_stats(cell_dir / "spill_stats.csv")
+
+    ### `sinks_nonempty` above is the only thing the join output is read for, and it has been decided
+    ### by now. Keeping the files costs tens of GB per cell at unbounded ingestion.
+    if not getattr(cfg, "KEEP_SINK_OUTPUT", False):
+        for q in queries:
+            with suppress(OSError):
+                q.sink_path.unlink(missing_ok=True)
 
     sd = cell.spill_dict
     return {
@@ -557,6 +751,8 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
         "no_buffers": cell.no_buffers,
         "spill_variant": sd["name"],
         "predictor": sd.get("predictor", ""),
+        "high_bound": cell.high_bound,
+        "horizon_ms": cell.horizon_ms,
         "var_sized_bytes": cell.var_size,
         "ingestion_rate": cell.rate,
         "wall_s": wall_s,
@@ -566,6 +762,7 @@ def run_cell(cell: Cell, cell_dir: Path, run_id: str, env: Environment) -> dict:
         "peak_rss_bytes": peak_rss,
         "peak_pooled_used": peak_pool,
         "peak_unpooled_used": peak_unp,
+        **spill_stats,
         "failure_reason": failure_reason,
     }
 
@@ -634,6 +831,8 @@ def main(argv: list[str]) -> int:
                     "no_buffers": cell.no_buffers,
                     "spill_variant": cell.spill_dict["name"],
                     "predictor": cell.spill_dict.get("predictor", ""),
+                    "high_bound": cell.high_bound,
+                    "horizon_ms": cell.horizon_ms,
                     "var_sized_bytes": cell.var_size,
                     "ingestion_rate": cell.rate,
                     "wall_s": "",
@@ -643,6 +842,7 @@ def main(argv: list[str]) -> int:
                     "peak_rss_bytes": "",
                     "peak_pooled_used": "",
                     "peak_unpooled_used": "",
+                    **{k: "" for k in SPILL_RESULT_COLS},
                     "failure_reason": "dry-matrix",
                 }
             else:

@@ -1,16 +1,19 @@
+{#
+  No SET (SPILL.* AS ...) clause here on purpose.
+
+  A per-query spill override is bound correctly by the SQL parser, but it is dropped at the gRPC
+  boundary: grpc/SerializableQueryPlan.proto carries only reflectedOperators / rootOperatorIds /
+  queryId, so LogicalPlan::spillConfig never survives the trip from nes-cli to the worker. Every
+  query in this benchmark is submitted through nes-cli, so a SET clause here would be silently
+  ignored and every cell would measure a non-spilling engine.
+
+  Each cell spawns its own worker anyway, so the spill configuration is passed as
+  `--worker.default_query_execution.spill.*` flags in benchmark.py::spawn_worker instead — one
+  worker, one spill configuration, which is exactly the cell's granularity.
+#}
 SELECT *
 FROM (SELECT * FROM streamA_q{{ q_index }})
 INNER JOIN (SELECT * FROM streamB_q{{ q_index }})
 ON id = id2
 WINDOW SLIDING (timestamp, size {{ size_ms }} ms, advance by {{ slide_ms }} ms)
-INTO sinkQ{{ q_index }}
-{% if spill.enabled -%}
-SET (TRUE AS SPILL.ENABLED,
-     '{{ spill.policy  }}' AS SPILL.POLICY,
-     '{{ spill.backend }}' AS SPILL.BACKEND
-     {%- if spill.policy == 'predictive' %},
-     '{{ spill.predictor }}' AS SPILL.PREDICTOR
-     {%- endif %})
-{%- else -%}
-SET (FALSE AS SPILL.ENABLED)
-{%- endif %};
+INTO sinkQ{{ q_index }};

@@ -57,11 +57,23 @@ SPILL_VARIANTS = [
 ]
 PREDICTOR_VARIANTS = ["ewma", "kalman"]
 
+### Memory-pressure ratio at/above which a slice is spilled. Swept because it decides *when* the
+### policy engages at all; a value > 1.0 is unreachable, i.e. "run the predictor but never spill",
+### which isolates pure predictor overhead.
+SPILL_HIGH_BOUND = [0.7]
+
+### Predictive policy only: how many ms ahead the predictor must place a slice's trigger for it to
+### stay resident under pressure. Reactive/off cells run only the first entry (see matrix()).
+PREDICTION_HORIZON_MS = [50, 500]
+
 ### value2 is the VARSIZED column; the generator emits a fixed ASCII payload of this byte count.
-VAR_SIZED_BYTES = [16, 256, 4096]
+### Trimmed to the two extremes: the sweep is already hours long and the middle point has never
+### separated the variants. Re-add 256 for a full-grid run.
+VAR_SIZED_BYTES = [16, 4096]
 
 ### Ingestion rate sweep: tuples/sec PER SOURCE, passed to the generator's --rate. 0 = unbounded (as fast as the socket accepts).
-INGESTION_RATES = [100_000, 1_000_000, 0]
+### Trimmed to a paced rate and unbounded; 1M/s behaved as unbounded on every machine tested.
+INGESTION_RATES = [100_000, 0]
 
 ### Tumbling is modelled as SLIDING with size == slide. Tuples are (size_ms, slide_ms).
 WINDOWS = [
@@ -70,6 +82,11 @@ WINDOWS = [
     (10_000, 2_000),
     (30_000, 5_000),
 ]
+
+### Keep each cell's join output (`q_<i>.out`) after the run. The files are only read to decide
+### `sinks_nonempty`, and an unbounded-ingestion self-join writes tens of GB per cell — a full sweep
+### will fill a disk. Set True only when inspecting query results for a single cell.
+KEEP_SINK_OUTPUT = False
 
 ### Runtime knobs.
 QUERY_SUBMIT_INTERVAL_S = 3
