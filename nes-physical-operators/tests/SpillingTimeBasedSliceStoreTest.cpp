@@ -222,6 +222,48 @@ TEST_F(SpillingTimeBasedSliceStoreTest, HighPressureSpillsSliceAndRestoreOnProbe
     EXPECT_EQ(static_cast<NLJSlice&>(*restored.value()).getNumberOfTuplesLeft(), preSpillTuples);
 }
 
+/// Regression: the decorator used to build its GC candidate set from slices it saw pass through its
+/// own getSlicesOrCreate. The JIT-compiled build path does not go through the decorator — it holds a
+/// SliceStoreRef bound to the concrete inner store — so in a real query the candidate set was always
+/// empty and nothing was ever spilled at any pressure. Creating the slice directly on the inner store
+/// reproduces that bypass; the decorator must still find and spill it.
+TEST_F(SpillingTimeBasedSliceStoreTest, SpillsSlicesCreatedDirectlyOnTheInnerStore)
+{
+    auto backend = std::make_shared<InMemoryStorageBackend>();
+    auto inner = std::make_unique<DefaultTimeBasedSliceStore>(WindowSize, WindowSlide, SliceCacheConfiguration{});
+    auto* innerRaw = inner.get();
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("NLJSlice");
+    auto store = std::make_unique<SpillingTimeBasedSliceStore>(
+        std::move(inner),
+        std::make_unique<PressureSpillPolicy>(/*high*/ 0.8),
+        backend,
+        std::make_unique<ConstantPressureSensor>(0.95),
+        *bufferManager,
+        *serializer);
+    store->incrementNumberOfInputPipelines();
+
+    /// Bypass the decorator exactly as the SliceStoreRef does: straight to the inner store.
+    auto created = innerRaw->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+    ASSERT_EQ(created.size(), 1U);
+    auto& slice = static_cast<NLJSlice&>(*created.front());
+    slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(4, 0x5A)});
+    ASSERT_EQ(slice.getNumberOfTuplesLeft(), 4U);
+
+    store->garbageCollectSlicesAndWindows(Timestamp{100});
+
+    EXPECT_EQ(store->numSpilledSlices(), 1U);
+    EXPECT_TRUE(store->isSliceSpilled(SliceEnd{100}));
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
+    EXPECT_EQ(store->statistics().spills.load(), 1U);
+}
+
 TEST_F(SpillingTimeBasedSliceStoreTest, SpilledSlicesAreNotDoubleSpilled)
 {
     auto backend = std::make_shared<InMemoryStorageBackend>();

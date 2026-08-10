@@ -83,6 +83,17 @@ public:
     /// Additionally, it returns a sequence number per window that is incremented for each window and thus, it can be used to set it in the emitted tuple buffer for the probe operator.
     virtual std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> getAllNonTriggeredSlices() = 0;
 
+    /// Read-only snapshot of every slice the store currently holds.
+    ///
+    /// Deliberately distinct from getAllNonTriggeredSlices(), which is DESTRUCTIVE: it consumes an
+    /// input-pipeline termination, bumps sequence numbers and moves windows to EMITTED_TO_PROBE.
+    /// A decorator that needs to inspect live slices on a timer (the spill subsystem) cannot use it.
+    ///
+    /// This must be answered by whoever actually owns the slices, not by a decorator tracking what
+    /// passed through its own getSlicesOrCreate: the JIT-compiled build path reaches the concrete
+    /// store directly through a SliceStoreRef, so a decorator never sees those calls.
+    [[nodiscard]] virtual std::vector<std::shared_ptr<Slice>> getLiveSlices() const = 0;
+
     /// Garbage collect all slices and windows that are not valid anymore
     /// It is open for the implementation to delete the slices in this call or to mark them for deletion
     /// There is no guarantee that the slices are deleted after this call

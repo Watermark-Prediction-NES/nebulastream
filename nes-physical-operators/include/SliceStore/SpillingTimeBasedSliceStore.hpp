@@ -44,6 +44,12 @@ namespace NES
 /// is either SpillInFlight (spill future pending) or Spilled (handle present). Resident slices have
 /// no entry. The decorator skips slices in SpillInFlight during GC ticks.
 ///
+/// The set of candidate slices comes from `inner->getLiveSlices()` on every GC tick, NOT from
+/// anything this decorator observes on its own methods. That is essential rather than incidental:
+/// the JIT-compiled build path holds a SliceStoreRef bound to the concrete inner store and calls
+/// getSlicesOrCreate on it directly, so a decorator that tracked its own callers would see almost
+/// nothing and would never spill.
+///
 /// Restore on probe access is BLOCKING in v1. A future change can hand the restore future to the
 /// pipeline scheduler so the worker can run other tasks while the I/O is in flight.
 class SpillingTimeBasedSliceStore final : public WindowSlicesStoreInterface
@@ -66,6 +72,8 @@ public:
     getTriggerableWindowSlices(Timestamp globalWatermark) override;
 
     std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> getAllNonTriggeredSlices() override;
+
+    [[nodiscard]] std::vector<std::shared_ptr<Slice>> getLiveSlices() const override;
 
     std::optional<std::shared_ptr<Slice>> getSliceBySliceEnd(SliceEnd sliceEnd) override;
 
@@ -123,9 +131,6 @@ private:
     /// Spill state keyed by slice end: each entry is either SpillInFlight or Spilled. Resident
     /// (in-memory) slices have no entry here.
     folly::Synchronized<std::unordered_map<Timestamp::Underlying, HandleEntry>> spillHandlesBySliceEnd;
-    /// Decorator-side weak tracking of slices we have observed via getSlicesOrCreate. Used during
-    /// GC ticks to iterate without invoking the inner store's destructive getAllNonTriggeredSlices.
-    folly::Synchronized<std::unordered_map<Timestamp::Underlying, std::weak_ptr<Slice>>> observedSlices;
 
     /// Wall-clock source for predictor observations + the create-horizon deadline. steady_clock ms by
     /// default; overridable in tests via setWallClockSourceForTesting.

@@ -77,21 +77,11 @@ void SpillingTimeBasedSliceStore::setWallClockSourceForTesting(std::function<Tim
 std::vector<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getSlicesOrCreate(
     const Timestamp timestamp, const std::function<std::vector<std::shared_ptr<Slice>>(SliceStart, SliceEnd)>& createNewSlice)
 {
-    auto slices = inner->getSlicesOrCreate(timestamp, createNewSlice);
-    /// Track slices weakly so the decorator can iterate them during GC ticks without consuming
-    /// the inner store's destructive pipeline counter on each call.
-    observedSlices.withWLock(
-        [&](auto& map)
-        {
-            for (const auto& slice : slices)
-            {
-                if (slice != nullptr)
-                {
-                    map[slice->getSliceEnd().getRawValue()] = slice;
-                }
-            }
-        });
-    return slices;
+    /// Pure delegation. The decorator deliberately does NOT track what passes through here: the
+    /// JIT-compiled build path holds a SliceStoreRef bound to the concrete inner store and calls it
+    /// directly, so most slices are never created through this method. GC reads the inner store's
+    /// own live set via getLiveSlices() instead, which sees every slice regardless of the caller.
+    return inner->getSlicesOrCreate(timestamp, createNewSlice);
 }
 
 std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>>
@@ -132,6 +122,11 @@ std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> Spill
     return inner->getAllNonTriggeredSlices();
 }
 
+std::vector<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getLiveSlices() const
+{
+    return inner->getLiveSlices();
+}
+
 std::optional<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getSliceBySliceEnd(SliceEnd sliceEnd)
 {
     auto sliceOpt = inner->getSliceBySliceEnd(sliceEnd);
@@ -166,25 +161,9 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
     spillPolicy->observe(now, newGlobalWaterMark);
     const double pressure = sensor->sample();
 
-    /// Snapshot live slices from our weak tracking map. We never call the inner store's
-    /// destructive getAllNonTriggeredSlices here.
-    std::vector<std::shared_ptr<Slice>> liveSlices;
-    observedSlices.withWLock(
-        [&](auto& map)
-        {
-            for (auto it = map.begin(); it != map.end();)
-            {
-                if (auto strong = it->second.lock())
-                {
-                    liveSlices.push_back(std::move(strong));
-                    ++it;
-                }
-                else
-                {
-                    it = map.erase(it);
-                }
-            }
-        });
+    /// Ask the inner store what it actually holds. Not getAllNonTriggeredSlices(), which is
+    /// destructive (it consumes an input-pipeline termination and marks windows EMITTED_TO_PROBE).
+    const std::vector<std::shared_ptr<Slice>> liveSlices = inner->getLiveSlices();
 
     for (auto& slicePtr : liveSlices)
     {

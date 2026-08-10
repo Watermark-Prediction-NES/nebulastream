@@ -319,6 +319,23 @@ std::optional<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getSliceBySlic
     return {};
 }
 
+std::vector<std::shared_ptr<Slice>> DefaultTimeBasedSliceStore::getLiveSlices() const
+{
+    /// Copy the shared_ptrs out under the read lock and release it before returning: the caller
+    /// (the spill decorator) does I/O per slice, which must not run while this lock is held.
+    const auto slicesReadLocked = slices.rlock();
+    std::vector<std::shared_ptr<Slice>> live;
+    live.reserve(slicesReadLocked->size());
+    for (const auto& slice : *slicesReadLocked | std::views::values)
+    {
+        if (slice != nullptr)
+        {
+            live.push_back(slice);
+        }
+    }
+    return live;
+}
+
 std::map<WindowInfoAndSequenceNumber, std::vector<std::shared_ptr<Slice>>> DefaultTimeBasedSliceStore::getAllNonTriggeredSlices()
 {
     /// Acquiring a lock for the windows, as we have to iterate over all windows and trigger all non-triggered windows
