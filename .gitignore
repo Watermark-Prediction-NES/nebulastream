@@ -64,3 +64,6 @@ scripts/__pycache__
 [Cc][Ll][Aa][Uu][Dd][Ee].md
 
 *.ipynb
+# ...except the benchmark plotting notebooks, which are the source of the paper figures. The two
+# older ones were force-added past this rule; the negation keeps every one of them consistent.
+!scripts/benchmarking/*/plot_results.ipynb

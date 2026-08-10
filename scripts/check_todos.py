@@ -30,6 +30,13 @@ COLOR_RED_BOLD = "\033[1;31m"
 COLOR_BG_RED_FONT_WHITE = "\033[1;41m\033[1;37m"
 COLOR_RESET = "\033[0m"
 
+# A long, unbroken run of base64 characters — how Jupyter stores a rendered figure inside a notebook.
+# Only ever applied to .ipynb, where such a line is an output payload rather than anything a human
+# wrote. The 200-char floor keeps it well clear of real source lines.
+# Matches both shapes nbformat writes: the payload inline after its media-type key
+# (`"image/png": "iVBOR..."`) and a bare continuation chunk of the same blob.
+BASE64_PAYLOAD = re.compile(r'^\s*(?:"[\w/+.\-]+"\s*:\s*)?"?[A-Za-z0-9+/=]{200,}"?,?\s*$')
+
 def run_cmd(cmd: list) -> str:
     """runs cmd, returns stdout or crashes"""
     try:
@@ -86,6 +93,13 @@ def line_contains_todo(filename: str, line: str) -> bool:
     Additionally, `NO_TODO_CHECK` at the end of the line can be used to suppress the check.
     """
     if line.endswith("NO_TODO_CHECK"):
+        return False
+
+    if filename.endswith(".ipynb") and BASE64_PAYLOAD.match(line):
+        # Jupyter notebooks embed rendered figures as base64 in their output cells. That is data, not
+        # source: a blob of a few hundred base64 characters will eventually contain both a "///" run
+        # (base64 uses "/") and those four letters purely by chance, which the check below then
+        # reports as a malformed TODO in a file that has none.  NO_TODO_CHECK
         return False
 
     if filename.endswith(".md"):

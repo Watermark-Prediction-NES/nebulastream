@@ -61,6 +61,7 @@ INGORED_ENDINGS = {
     "gitignore",
     "mailmap",
     "json",
+    "ipynb",  # a notebook is a JSON document, and "json" is already ignored above
     "kts",
     "md",
     "md5",
