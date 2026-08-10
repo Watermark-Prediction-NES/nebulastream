@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <Configurations/SpillConfiguration.hpp>
+#include <SliceStore/Spill/BuildSlotLatch.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 
 namespace NES
@@ -43,7 +44,8 @@ public:
         std::unique_ptr<WindowSlicesStoreInterface> inner,
         const SpillConfiguration& spillConfig,
         AbstractBufferProvider* bufferProvider,
-        const std::string& serializerName);
+        const std::string& serializerName,
+        std::shared_ptr<BuildSlotLatch> buildSlotLatch = nullptr);
 };
 
 }

@@ -23,6 +23,7 @@
 #include <vector>
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <SliceStore/Slice.hpp>
+#include <SliceStore/Spill/BuildSlotLatch.hpp>
 #include <SliceStore/Spill/MemoryPressureSensor.hpp>
 #include <SliceStore/Spill/SliceStateSerializer.hpp>
 #include <SliceStore/Spill/SpillPolicy.hpp>
@@ -61,7 +62,8 @@ public:
         std::shared_ptr<StorageBackend> backend,
         std::unique_ptr<MemoryPressureSensor> sensor,
         AbstractBufferProvider& buffers,
-        SliceStateSerializer& serializer);
+        SliceStateSerializer& serializer,
+        std::shared_ptr<BuildSlotLatch> buildSlotLatch = nullptr);
 
     ~SpillingTimeBasedSliceStore() override;
 
@@ -128,6 +130,9 @@ private:
     /// A store only ever holds one Slice subclass, so the serializer is resolved once at construction
     /// (from the slice type known at lowering) instead of a registry lookup per spill/restore/GC.
     SliceStateSerializer& serializer;
+    /// Excludes the JIT build path while a still-filling slice is spilled. Null means the decorator
+    /// falls back to spilling only sealed slices, which needs no exclusion.
+    std::shared_ptr<BuildSlotLatch> buildSlotLatch;
 
     /// Spill state keyed by slice end: each entry is either SpillInFlight or Spilled. Resident
     /// (in-memory) slices have no entry here.

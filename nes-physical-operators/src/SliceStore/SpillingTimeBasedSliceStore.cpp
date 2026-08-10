@@ -42,13 +42,15 @@ SpillingTimeBasedSliceStore::SpillingTimeBasedSliceStore(
     std::shared_ptr<StorageBackend> backend_,
     std::unique_ptr<MemoryPressureSensor> sensor_,
     AbstractBufferProvider& buffers_,
-    SliceStateSerializer& serializer_)
+    SliceStateSerializer& serializer_,
+    std::shared_ptr<BuildSlotLatch> buildSlotLatch_)
     : inner(std::move(inner_))
     , spillPolicy(std::move(policy_))
     , backend(std::move(backend_))
     , sensor(std::move(sensor_))
     , buffers(buffers_)
     , serializer(serializer_)
+    , buildSlotLatch(std::move(buildSlotLatch_))
 {
     wallClockNow = []
     {
@@ -165,15 +167,48 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
     /// destructive (it consumes an input-pipeline termination and marks windows EMITTED_TO_PROBE).
     const std::vector<std::shared_ptr<Slice>> liveSlices = inner->getLiveSlices();
 
-    for (auto& slicePtr : liveSlices)
+    /// Two classes of candidate, and the difference is a correctness one.
+    ///
+    /// A SEALED slice (end <= global watermark) can no longer receive build tuples, by the definition
+    /// of the watermark, so it can be spilled with no coordination at all.
+    ///
+    /// A FILLING slice may be written at this very moment by JIT-compiled build code, through a raw
+    /// pointer cached in a per-pipeline SliceCache and with no lock shared with this thread. Spilling
+    /// mutates the same structure (HJSliceStateSerializer calls ChainedHashMap::clear, NLJ drains the
+    /// PagedVector's pages), which without exclusion segfaults inside ChainedHashMap::insertEntry
+    /// under load. Most of the memory is in filling slices, though, so refusing to spill them makes
+    /// the whole subsystem nearly pointless — hence the BuildSlotLatch, which keeps build tasks out
+    /// for the duration of the spill. `deferred` collects them so the barrier is raised once per tick
+    /// rather than once per slice.
+    std::vector<std::shared_ptr<Slice>> deferredFillingSlices;
+
+    const auto isSpillable = [&](const Slice& slice)
+    {
+        const auto key = slice.getSliceEnd().getRawValue();
+        /// Skip slices that already have an on-disk handle — prevents double-spill and races with an ongoing restore.
+        return !spillHandlesBySliceEnd.withRLock([&](const auto& map) { return map.contains(key); });
+    };
+
+    const auto decideAndSpill = [&](const std::shared_ptr<Slice>& slicePtr)
     {
         const auto sliceEndKey = slicePtr->getSliceEnd().getRawValue();
-        /// Skip slices that already have an on-disk handle — prevents double-spill and races with an ongoing restore.
-        const bool inFlight = spillHandlesBySliceEnd.withRLock([&](const auto& map) { return map.find(sliceEndKey) != map.end(); });
-        if (inFlight)
+        auto spilled = spillSliceSynchronous(*slicePtr);
+        if (spilled)
+        {
+            spillHandlesBySliceEnd.withWLock(
+                [&](auto& map) { map[sliceEndKey] = HandleEntry{.state = HandleState::Spilled, .handle = std::move(spilled.value())}; });
+        }
+    };
+
+    for (auto& slicePtr : liveSlices)
+    {
+        if (!isSpillable(*slicePtr))
         {
             continue;
         }
+        /// Sealed == the watermark has passed the slice's end, so no build tuple can be assigned to it
+        /// any more and spilling it needs no exclusion against the build path.
+        const bool sealed = slicePtr->getSliceEnd().getRawValue() <= newGlobalWaterMark.getRawValue();
         const SliceSpillContext ctx{
             .sliceEnd = slicePtr->getSliceEnd(),
             /// Wall clock, NOT the event-time watermark: a predictive policy compares this against the
@@ -196,10 +231,36 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
         /// can retry. Some slices can never be spilled at all — HJSliceStateSerializer rejects hash
         /// maps holding var-sized pages — and throwing there would kill every query whose join payload
         /// contains a VARSIZED field the moment memory got tight.
-        if (auto spilled = spillSliceSynchronous(*slicePtr))
+        if (sealed)
         {
-            spillHandlesBySliceEnd.withWLock(
-                [&](auto& map) { map[sliceEndKey] = HandleEntry{.state = HandleState::Spilled, .handle = std::move(spilled.value())}; });
+            decideAndSpill(slicePtr);
+        }
+        else
+        {
+            deferredFillingSlices.push_back(slicePtr);
+        }
+    }
+
+    /// One barrier for every filling slice this tick. If it cannot be taken (a build task is running
+    /// long, or one died without clearing its slot) nothing is spilled — the slices stay resident and
+    /// the next tick tries again. Never spill without it: that is the segfault.
+    if (!deferredFillingSlices.empty())
+    {
+        if (const BuildSlotLatch::Barrier barrier{buildSlotLatch.get()}; barrier.held())
+        {
+            for (const auto& slicePtr : deferredFillingSlices)
+            {
+                /// Re-check under the barrier: a concurrent probe may have restored or triggered the
+                /// slice between the decision above and here.
+                if (isSpillable(*slicePtr))
+                {
+                    decideAndSpill(slicePtr);
+                }
+            }
+        }
+        else
+        {
+            stats.barrierMisses.fetch_add(deferredFillingSlices.size(), std::memory_order_relaxed);
         }
     }
 

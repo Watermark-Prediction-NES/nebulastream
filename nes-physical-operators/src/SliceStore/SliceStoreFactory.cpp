@@ -43,7 +43,8 @@ std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::wrapWithSpill(
     std::unique_ptr<WindowSlicesStoreInterface> inner,
     const SpillConfiguration& spillConfig,
     AbstractBufferProvider* bufferProvider,
-    const std::string& serializerName)
+    const std::string& serializerName,
+    std::shared_ptr<BuildSlotLatch> buildSlotLatch)
 {
     /// Ensure the per-slice serializer AND storage-backend registrars (all anonymous-namespace
     /// globals) are not dropped by the static-library linker when no other call site references them.
@@ -99,7 +100,13 @@ std::unique_ptr<WindowSlicesStoreInterface> SliceStoreFactory::wrapWithSpill(
     SpillStatsRegistry::instance().enableCsv(spillConfig.statsLogPath, spillConfig.statsInterval);
 
     return std::make_unique<SpillingTimeBasedSliceStore>(
-        std::move(inner), std::move(policy), std::move(backend), std::move(sensor), *bufferProvider, *serializer);
+        std::move(inner),
+        std::move(policy),
+        std::move(backend),
+        std::move(sensor),
+        *bufferProvider,
+        *serializer,
+        std::move(buildSlotLatch));
 }
 
 }

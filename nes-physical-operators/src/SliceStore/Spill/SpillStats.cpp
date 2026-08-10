@@ -77,7 +77,7 @@ void SpillStatsRegistry::samplerLoop(const std::stop_token& stopToken) const
     {
         return;
     }
-    file << "timestamp_ms,store_id,spills,restores,spill_failures,spilled_bytes,restored_bytes,"
+    file << "timestamp_ms,store_id,spills,restores,spill_failures,barrier_misses,spilled_bytes,restored_bytes,"
             "kept_by_prediction,spilled_predictor_cold,spilled_beyond_horizon,"
             "spill_ns_total,restore_ns_total,restore_ns_max,resident_slices,spilled_slices\n";
 
@@ -106,7 +106,7 @@ void SpillStatsRegistry::samplerLoop(const std::stop_token& stopToken) const
             const auto policyStats = registration.policy != nullptr ? registration.policy->stats() : SpillPolicyStatistics{};
             file << now << ',' << storeId << ',' << stats.spills.load(std::memory_order_relaxed) << ','
                  << stats.restores.load(std::memory_order_relaxed) << ',' << stats.spillFailures.load(std::memory_order_relaxed) << ','
-                 << stats.spilledBytes.load(std::memory_order_relaxed) << ','
+                 << stats.barrierMisses.load(std::memory_order_relaxed) << ',' << stats.spilledBytes.load(std::memory_order_relaxed) << ','
                  << stats.restoredBytes.load(std::memory_order_relaxed) << ',' << policyStats.keptByPrediction << ','
                  << policyStats.spilledPredictorCold << ',' << policyStats.spilledBeyondHorizon << ','
                  << stats.spillNanosTotal.load(std::memory_order_relaxed) << ',' << stats.restoreNanosTotal.load(std::memory_order_relaxed)

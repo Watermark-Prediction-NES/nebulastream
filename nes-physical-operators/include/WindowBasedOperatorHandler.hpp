@@ -27,6 +27,7 @@
 #include <Runtime/QueryTerminationType.hpp>
 #include <Sequencing/SequenceData.hpp>
 #include <SliceStore/Slice.hpp>
+#include <SliceStore/Spill/BuildSlotLatch.hpp>
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Time/Timestamp.hpp>
 #include <Watermark/MultiOriginWatermarkProcessor.hpp>
@@ -83,6 +84,13 @@ public:
     /// Updates the corresponding watermark processor, and then garbage collects all slices and windows that are not valid anymore
     void garbageCollectSlicesAndWindows(const BufferMetaData& bufferMetaData) const;
 
+    /// Build-path bracket, called once per TupleBuffer from WindowBuildPhysicalOperator::open/close.
+    /// Marks this worker thread as writing slices so a concurrent spill of a still-filling slice waits
+    /// instead of draining a structure mid-insert. Returns false if a spill barrier did not lift in
+    /// time, in which case the caller must not touch slice state for this buffer.
+    bool enterBuild(WorkerThreadId workerThreadId) const noexcept;
+    void exitBuild(WorkerThreadId workerThreadId) const noexcept;
+
     /// Checks and triggers windows that are ready to be triggered, e.g., the watermark has passed the window end for time-based windows.
     /// This method updates the watermarkProcessor and is thread-safe
     virtual void checkAndTriggerWindows(const BufferMetaData& bufferMetaData, PipelineExecutionContext* pipelineCtx);
@@ -117,5 +125,9 @@ protected:
     std::string serializerName;
     /// Guards the one-time deferred spill-wrap against concurrent build/probe pipeline setups.
     std::once_flag spillWrapOnceFlag;
+    /// Shared with the spilling store so the GC tick can exclude the build path. Created in
+    /// ensureSpillStoreInitialized once the worker-thread count is known; null when spill is off, and
+    /// enterBuild/exitBuild then reduce to a null check.
+    std::shared_ptr<BuildSlotLatch> buildSlotLatch;
 };
 }

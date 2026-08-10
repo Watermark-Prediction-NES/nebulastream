@@ -26,6 +26,7 @@
 #include <Runtime/TupleBuffer.hpp>
 #include <SliceStore/DefaultTimeBasedSliceStore.hpp>
 #include <SliceStore/Slice.hpp>
+#include <SliceStore/Spill/BuildSlotLatch.hpp>
 #include <SliceStore/Spill/ConstantPressureSensor.hpp>
 #include <SliceStore/Spill/InMemoryStorageBackend.hpp>
 #include <SliceStore/Spill/NLJSliceStateSerializer.hpp>
@@ -159,6 +160,8 @@ TEST_F(SpillingTimeBasedSliceStoreTest, ObservePassesWallClockAsNowAndWatermarkA
             return out;
         });
 
+    /// Watermark 100 seals the slice (end == 100) so it reaches decide(); an unsealed slice is
+    /// skipped before the policy is consulted, which would leave lastContextNow unset.
     store->garbageCollectSlicesAndWindows(Timestamp{100});
 
     ASSERT_EQ(policyPtr->observeCalls, 1U);
@@ -212,8 +215,8 @@ TEST_F(SpillingTimeBasedSliceStoreTest, HighPressureSpillsSliceAndRestoreOnProbe
     const auto preSpillTuples = slice.getNumberOfTuplesLeft();
     ASSERT_EQ(preSpillTuples, 8U);
 
-    /// GC tick — under high pressure the slice is spilled.
-    store->garbageCollectSlicesAndWindows(Timestamp{50});
+    /// GC tick at a watermark that seals the slice (end == 100) — under high pressure it is spilled.
+    store->garbageCollectSlicesAndWindows(Timestamp{100});
     EXPECT_EQ(store->numSpilledSlices(), 1U);
     EXPECT_TRUE(store->isSliceSpilled(SliceEnd{100}));
     EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
@@ -260,12 +263,140 @@ TEST_F(SpillingTimeBasedSliceStoreTest, SpillsSlicesCreatedDirectlyOnTheInnerSto
     slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(4, 0x5A)});
     ASSERT_EQ(slice.getNumberOfTuplesLeft(), 4U);
 
+    /// Watermark at/after the slice end seals it, making it a spill candidate.
     store->garbageCollectSlicesAndWindows(Timestamp{100});
 
     EXPECT_EQ(store->numSpilledSlices(), 1U);
     EXPECT_TRUE(store->isSliceSpilled(SliceEnd{100}));
     EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
     EXPECT_EQ(store->statistics().spills.load(), 1U);
+}
+
+/// Without a BuildSlotLatch the decorator must refuse to spill a still-filling slice: the JIT build
+/// path mutates its data structure through a cached raw pointer with no lock shared with the GC
+/// thread, and draining it underneath produced a SIGSEGV in ChainedHashMap::insertEntry under load.
+TEST_F(SpillingTimeBasedSliceStoreTest, StillFillingSliceIsNotSpilledWithoutALatch)
+{
+    auto backend = std::make_shared<InMemoryStorageBackend>();
+    auto store = makeStore(backend, /*pressure*/ 1.0);
+
+    auto created = store->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+    auto& slice = static_cast<NLJSlice&>(*created.front());
+    slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(6, 0x77)});
+
+    /// Watermark still inside the slice (end == 100), so more tuples may yet arrive for it.
+    store->garbageCollectSlicesAndWindows(Timestamp{99});
+
+    EXPECT_EQ(store->numSpilledSlices(), 0U) << "an unsealed slice must not be spilled without exclusion";
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 6U);
+
+    /// Once the watermark seals it, the same slice becomes a candidate.
+    store->garbageCollectSlicesAndWindows(Timestamp{100});
+    EXPECT_EQ(store->numSpilledSlices(), 1U);
+}
+
+/// With a latch, a still-filling slice IS spilled — that is where the memory is. The latch must have
+/// excluded the build path while it happened.
+TEST_F(SpillingTimeBasedSliceStoreTest, StillFillingSliceIsSpilledUnderTheBuildLatch)
+{
+    auto latch = std::make_shared<BuildSlotLatch>(NumWorkerThreads);
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("NLJSlice");
+    auto store = std::make_unique<SpillingTimeBasedSliceStore>(
+        std::make_unique<DefaultTimeBasedSliceStore>(WindowSize, WindowSlide, SliceCacheConfiguration{}),
+        std::make_unique<PressureSpillPolicy>(/*high*/ 0.8),
+        std::make_shared<InMemoryStorageBackend>(),
+        std::make_unique<ConstantPressureSensor>(0.95),
+        *bufferManager,
+        *serializer,
+        latch);
+    store->incrementNumberOfInputPipelines();
+
+    auto created = store->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+    auto& slice = static_cast<NLJSlice&>(*created.front());
+    slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(9, 0x33)});
+
+    /// Watermark well before the slice end: the slice is still filling.
+    store->garbageCollectSlicesAndWindows(Timestamp{10});
+
+    EXPECT_EQ(store->numSpilledSlices(), 1U);
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
+    EXPECT_EQ(store->statistics().barrierMisses.load(), 0U);
+}
+
+/// A build task in flight must block the spill rather than be raced. The spill is skipped and counted,
+/// and the slice keeps its data.
+TEST_F(SpillingTimeBasedSliceStoreTest, FillingSliceIsSkippedWhileABuildTaskHoldsItsSlot)
+{
+    auto latch = std::make_shared<BuildSlotLatch>(NumWorkerThreads);
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("NLJSlice");
+    auto store = std::make_unique<SpillingTimeBasedSliceStore>(
+        std::make_unique<DefaultTimeBasedSliceStore>(WindowSize, WindowSlide, SliceCacheConfiguration{}),
+        std::make_unique<PressureSpillPolicy>(/*high*/ 0.8),
+        std::make_shared<InMemoryStorageBackend>(),
+        std::make_unique<ConstantPressureSensor>(0.95),
+        *bufferManager,
+        *serializer,
+        latch);
+    store->incrementNumberOfInputPipelines();
+
+    auto created = store->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+    auto& slice = static_cast<NLJSlice&>(*created.front());
+    slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(4, 0x21)});
+
+    /// Simulate a worker thread sitting inside a build task for longer than the barrier timeout.
+    ASSERT_TRUE(latch->enterBuild(WorkerThreadId{0}));
+    store->garbageCollectSlicesAndWindows(Timestamp{10});
+    EXPECT_EQ(store->numSpilledSlices(), 0U) << "must not spill while a builder holds its slot";
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 4U);
+    EXPECT_EQ(store->statistics().barrierMisses.load(), 1U);
+
+    /// Once the builder leaves, the next tick spills it.
+    latch->exitBuild(WorkerThreadId{0});
+    store->garbageCollectSlicesAndWindows(Timestamp{10});
+    EXPECT_EQ(store->numSpilledSlices(), 1U);
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
+}
+
+/// The latch's two directions must actually exclude each other, and a builder that arrives while a
+/// barrier is up must not be admitted.
+TEST_F(SpillingTimeBasedSliceStoreTest, LatchExcludesBuilderAndSpillerFromEachOther)
+{
+    BuildSlotLatch latch{2};
+
+    ASSERT_TRUE(latch.acquireBarrier());
+    /// A builder arriving now is refused once BuilderWaitTimeout elapses; it must never be admitted
+    /// while the barrier is up.
+    EXPECT_FALSE(latch.enterBuild(WorkerThreadId{1}));
+    latch.releaseBarrier();
+
+    /// With the barrier down the same builder gets in immediately.
+    ASSERT_TRUE(latch.enterBuild(WorkerThreadId{1}));
+    /// ...and now the spiller is the one that must back off.
+    EXPECT_FALSE(latch.acquireBarrier());
+    latch.exitBuild(WorkerThreadId{1});
+    EXPECT_TRUE(latch.acquireBarrier());
+    latch.releaseBarrier();
 }
 
 /// A serializer that refuses a slice (HJSliceStateSerializer rejects hash maps with var-sized pages)
@@ -337,12 +468,12 @@ TEST_F(SpillingTimeBasedSliceStoreTest, SpilledSlicesAreNotDoubleSpilled)
     auto& slice = static_cast<NLJSlice&>(*created.front());
     slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(1, 0x01)});
 
-    store->garbageCollectSlicesAndWindows(Timestamp{50});
+    store->garbageCollectSlicesAndWindows(Timestamp{100});
     const auto firstSpillObjects = backend->numStoredObjects();
     ASSERT_EQ(store->numSpilledSlices(), 1U);
 
     /// Second GC tick: the slice is already in handles, so spill should be skipped — no new objects.
-    store->garbageCollectSlicesAndWindows(Timestamp{60});
+    store->garbageCollectSlicesAndWindows(Timestamp{110});
     EXPECT_EQ(backend->numStoredObjects(), firstSpillObjects);
     EXPECT_EQ(store->numSpilledSlices(), 1U);
 }

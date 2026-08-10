@@ -74,14 +74,32 @@ void WindowBasedOperatorHandler::ensureSpillStoreInitialized(PipelineExecutionCo
             const auto bufferProvider = pipelineExecutionContext.getBufferManager();
             if (bufferProvider != nullptr)
             {
-                sliceAndWindowStore
-                    = SliceStoreFactory::wrapWithSpill(std::move(sliceAndWindowStore), spillConfig, bufferProvider.get(), serializerName);
+                /// Sized from the pipeline's worker-thread count, which is only known here — the same
+                /// reason the wrap itself is deferred to runtime.
+                buildSlotLatch = std::make_shared<BuildSlotLatch>(pipelineExecutionContext.getNumberOfWorkerThreads());
+                sliceAndWindowStore = SliceStoreFactory::wrapWithSpill(
+                    std::move(sliceAndWindowStore), spillConfig, bufferProvider.get(), serializerName, buildSlotLatch);
             }
             else
             {
                 NES_WARNING("WindowBasedOperatorHandler: spill enabled but no buffer manager available; staying in memory");
             }
         });
+}
+
+bool WindowBasedOperatorHandler::enterBuild(const WorkerThreadId workerThreadId) const noexcept
+{
+    /// Null whenever spill is disabled, which is the default — the build path then pays one predictable
+    /// branch per buffer and nothing else.
+    return buildSlotLatch == nullptr || buildSlotLatch->enterBuild(workerThreadId);
+}
+
+void WindowBasedOperatorHandler::exitBuild(const WorkerThreadId workerThreadId) const noexcept
+{
+    if (buildSlotLatch != nullptr)
+    {
+        buildSlotLatch->exitBuild(workerThreadId);
+    }
 }
 
 void WindowBasedOperatorHandler::stop(QueryTerminationType, PipelineExecutionContext&)

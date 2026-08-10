@@ -51,6 +51,27 @@ void checkWindowsTriggerProxy(
     opHandler->checkAndTriggerWindows(bufferMetaData, pipelineCtx);
 }
 
+/// Build-path bracket, one call per TupleBuffer. Marks this worker thread as writing slice state so a
+/// concurrent GC tick cannot drain a still-filling slice underneath an in-flight insert.
+void enterBuildProxy(OperatorHandler* ptrOpHandler, const WorkerThreadId workerThreadId)
+{
+    PRECONDITION(ptrOpHandler != nullptr, "opHandler context should not be null!");
+    auto* opHandler = dynamic_cast<WindowBasedOperatorHandler*>(ptrOpHandler);
+    if (!opHandler->enterBuild(workerThreadId))
+    {
+        /// Only reachable if a spill barrier stayed up past its timeout, which means the spilling side
+        /// is wedged. Failing the task is the safe response: proceeding would write into a structure
+        /// that may be mid-drain.
+        throw CannotAllocateBuffer("WindowBuildPhysicalOperator: spill barrier did not lift; refusing to build into slice state");
+    }
+}
+
+void exitBuildProxy(OperatorHandler* ptrOpHandler, const WorkerThreadId workerThreadId)
+{
+    PRECONDITION(ptrOpHandler != nullptr, "opHandler context should not be null!");
+    dynamic_cast<WindowBasedOperatorHandler*>(ptrOpHandler)->exitBuild(workerThreadId);
+}
+
 void triggerAllWindowsProxy(OperatorHandler* ptrOpHandler, PipelineExecutionContext* piplineContext)
 {
     PRECONDITION(ptrOpHandler != nullptr, "opHandler context should not be null!");
@@ -74,8 +95,14 @@ void registerActivePipeline(OperatorHandler* ptrOpHandler, PipelineExecutionCont
 
 void WindowBuildPhysicalOperator::close(ExecutionContext& executionCtx, RecordBuffer&) const
 {
-    /// Update the watermark for the nlj operator and trigger slices
     auto operatorHandlerMemRef = executionCtx.getGlobalOperatorHandler(operatorHandlerId);
+
+    /// Release the build bracket BEFORE triggering: checkAndTriggerWindows reaches into the slice
+    /// store, and holding the bracket across it would keep a spill barrier waiting for a thread that
+    /// is no longer writing anything.
+    invoke(exitBuildProxy, operatorHandlerMemRef, executionCtx.workerThreadId);
+
+    /// Update the watermark for the nlj operator and trigger slices
     invoke(
         checkWindowsTriggerProxy,
         operatorHandlerMemRef,
@@ -102,6 +129,10 @@ nautilus::val<uint64_t> WindowBuildPhysicalOperator::open(ExecutionContext& exec
 
     /// Creating the local state for the window operator build.
     const auto operatorHandler = executionCtx.getGlobalOperatorHandler(operatorHandlerId);
+
+    /// One atomic store per buffer when spill is on, one null check when it is off. Must bracket every
+    /// path that writes slice state, so it goes here rather than around individual inserts.
+    invoke(enterBuildProxy, operatorHandler, executionCtx.workerThreadId);
     executionCtx.setLocalOperatorState(id, std::make_unique<WindowOperatorBuildLocalState>(operatorHandler));
     return nautilus::val<uint64_t>{0};
 }

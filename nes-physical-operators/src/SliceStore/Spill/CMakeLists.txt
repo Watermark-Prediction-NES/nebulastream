@@ -17,6 +17,7 @@ add_source_files(nes-physical-operators
         HJSliceStateSerializer.cpp
         StubSliceSerializers.cpp
         SpillStats.cpp
+        BuildSlotLatch.cpp
 )
 
 # Both names back the same PressureSpillPolicy: "reactive" = no predictor, "predictive" = predictor-refined.

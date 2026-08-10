@@ -35,6 +35,10 @@ struct SpillStatistics
     std::atomic<uint64_t> spills{0};
     std::atomic<uint64_t> restores{0};
     std::atomic<uint64_t> spillFailures{0};
+    /// Filling slices the policy chose to spill but that were skipped because the build barrier could
+    /// not be taken in time. Persistently non-zero means build tasks are longer than the barrier
+    /// timeout and the spill subsystem is being starved.
+    std::atomic<uint64_t> barrierMisses{0};
     std::atomic<uint64_t> spilledBytes{0};
     std::atomic<uint64_t> restoredBytes{0};
     std::atomic<uint64_t> spillNanosTotal{0};
