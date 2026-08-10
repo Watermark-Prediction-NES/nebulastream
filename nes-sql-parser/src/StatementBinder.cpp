@@ -15,6 +15,7 @@
 #include <SQLQueryParser/StatementBinder.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -611,6 +612,18 @@ public:
                         readString("BACKEND", cfg.storageBackendName);
                         readString("PREDICTOR", cfg.predictorName);
                         readDouble("HIGH_BOUND", cfg.highMemoryBound);
+                        /// The predictive policy's defining knob: how far ahead the predictor must place a
+                        /// slice's trigger for it to stay resident under pressure. Read through readDouble
+                        /// so an integer literal is accepted too, then narrowed to whole milliseconds.
+                        {
+                            auto horizonMs = static_cast<double>(cfg.predictionHorizon.count());
+                            readDouble("HORIZON", horizonMs);
+                            if (horizonMs < 0)
+                            {
+                                throw InvalidQuerySyntax("SPILL.HORIZON must not be negative");
+                            }
+                            cfg.predictionHorizon = std::chrono::milliseconds{static_cast<int64_t>(horizonMs)};
+                        }
                         spillCfg = cfg;
                     }
                 }

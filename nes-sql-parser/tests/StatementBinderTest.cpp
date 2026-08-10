@@ -11,6 +11,7 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 */
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -22,6 +23,7 @@
 
 
 #include <Configurations/Descriptor.hpp>
+#include <Configurations/SpillConfiguration.hpp>
 #include <DataTypes/DataType.hpp>
 #include <DataTypes/DataTypeProvider.hpp>
 #include <DataTypes/Schema.hpp>
@@ -431,6 +433,37 @@ TEST_F(StatementBinderTest, BindQueryWithSpillPolicyPredictorAndBackend)
     EXPECT_EQ(spillConfig->policyName, "predictive");
     EXPECT_EQ(spillConfig->predictorName, "kalman");
     EXPECT_EQ(spillConfig->storageBackendName, "local-file");
+}
+
+TEST_F(StatementBinderTest, BindQueryWithSpillHorizonAndHighBound)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output "
+                                    "SET (TRUE AS SPILL.ENABLED, 'predictive' AS SPILL.POLICY, "
+                                    "0.7 AS SPILL.HIGH_BOUND, 500 AS SPILL.HORIZON)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_TRUE(statement.has_value());
+    const auto& spillConfig = std::get<QueryStatement>(*statement).spillConfig;
+    ASSERT_TRUE(spillConfig.has_value());
+    EXPECT_DOUBLE_EQ(spillConfig->highMemoryBound, 0.7);
+    EXPECT_EQ(spillConfig->predictionHorizon, std::chrono::milliseconds{500});
+}
+
+TEST_F(StatementBinderTest, BindQueryWithoutSpillHorizonKeepsPodDefault)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET (TRUE AS SPILL.ENABLED)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_TRUE(statement.has_value());
+    const auto& spillConfig = std::get<QueryStatement>(*statement).spillConfig;
+    ASSERT_TRUE(spillConfig.has_value());
+    EXPECT_EQ(spillConfig->predictionHorizon, SpillConfiguration{}.predictionHorizon);
+}
+
+TEST_F(StatementBinderTest, BindQueryWithNegativeSpillHorizonIsRejected)
+{
+    const std::string queryString = "SELECT id, text FROM input INTO output SET (-5 AS SPILL.HORIZON)";
+    const auto statement = binder->parseAndBindSingle(queryString);
+    ASSERT_FALSE(statement.has_value());
+    EXPECT_EQ(statement.error().code(), ErrorCode::InvalidQuerySyntax);
 }
 
 TEST_F(StatementBinderTest, BindQueryWithSpillPolicyRejectsNonString)
