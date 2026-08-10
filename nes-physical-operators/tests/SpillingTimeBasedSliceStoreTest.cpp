@@ -30,6 +30,7 @@
 #include <SliceStore/Spill/PressureSpillPolicy.hpp>
 #include <SliceStore/Spill/SliceStateSerializerRegistry.hpp>
 #include <SliceStore/Spill/SpillObjectKey.hpp>
+#include <SliceStore/Spill/SpillPolicy.hpp>
 #include <SliceStore/SpillingTimeBasedSliceStore.hpp>
 #include <Time/Timestamp.hpp>
 #include <Util/Logger/LogLevel.hpp>
@@ -97,6 +98,70 @@ public:
 
     std::shared_ptr<AbstractBufferProvider> bufferManager;
 };
+
+namespace
+{
+/// Records what the store passes to observe(), so the (now, globalWatermark) contract is testable.
+class RecordingSpillPolicy final : public SpillPolicy
+{
+public:
+    [[nodiscard]] SpillDecision decide(const SliceSpillContext& ctx, double /*memoryPressure*/) const override
+    {
+        lastContextNow = ctx.now;
+        return SpillDecision::Keep;
+    }
+
+    void observe(Timestamp now, Timestamp globalWatermark) noexcept override
+    {
+        lastNow = now;
+        lastWatermark = globalWatermark;
+        ++observeCalls;
+    }
+
+    Timestamp lastNow{Timestamp::INVALID_VALUE};
+    Timestamp lastWatermark{Timestamp::INVALID_VALUE};
+    mutable Timestamp lastContextNow{Timestamp::INVALID_VALUE};
+    uint64_t observeCalls{0};
+};
+}
+
+/// Regression: the store used to call observe(watermark, wallClock) against a (now, watermark)
+/// signature, training the predictor on transposed axes. It must also hand decide() a wall-clock
+/// `now`, because a predictive policy compares it against a wall-clock trigger estimate.
+TEST_F(SpillingTimeBasedSliceStoreTest, ObservePassesWallClockAsNowAndWatermarkAsWatermark)
+{
+    constexpr uint64_t FakeWallClock = 9999;
+    auto policy = std::make_unique<RecordingSpillPolicy>();
+    auto* policyPtr = policy.get();
+
+    auto inner = std::make_unique<DefaultTimeBasedSliceStore>(WindowSize, WindowSlide, SliceCacheConfiguration{});
+    auto* serializer = SliceStateSerializerRegistry::instance().lookup("NLJSlice");
+    auto store = std::make_unique<SpillingTimeBasedSliceStore>(
+        std::move(inner),
+        std::move(policy),
+        std::make_shared<InMemoryStorageBackend>(),
+        std::make_unique<ConstantPressureSensor>(0.95),
+        *bufferManager,
+        *serializer);
+    store->incrementNumberOfInputPipelines();
+    store->setWallClockSourceForTesting([] { return Timestamp{FakeWallClock}; });
+
+    store->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+
+    store->garbageCollectSlicesAndWindows(Timestamp{100});
+
+    ASSERT_EQ(policyPtr->observeCalls, 1U);
+    EXPECT_EQ(policyPtr->lastNow, Timestamp{FakeWallClock});
+    EXPECT_EQ(policyPtr->lastWatermark, Timestamp{100});
+    EXPECT_EQ(policyPtr->lastContextNow, Timestamp{FakeWallClock});
+}
 
 TEST_F(SpillingTimeBasedSliceStoreTest, LowPressureKeepsAllSlicesResident)
 {

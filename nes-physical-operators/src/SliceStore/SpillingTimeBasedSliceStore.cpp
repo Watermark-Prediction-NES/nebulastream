@@ -155,7 +155,10 @@ std::optional<std::shared_ptr<Slice>> SpillingTimeBasedSliceStore::getSliceBySli
 
 void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGlobalWaterMark)
 {
-    spillPolicy->observe(newGlobalWaterMark, wallClockNow());
+    /// One wall-clock sample per tick, shared by observe() and every per-slice context below, so all
+    /// decisions in a tick are taken against the same instant.
+    const Timestamp now = wallClockNow();
+    spillPolicy->observe(now, newGlobalWaterMark);
     const double pressure = sensor->sample();
 
     /// Snapshot live slices from our weak tracking map. We never call the inner store's
@@ -189,7 +192,11 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
         }
         const SliceSpillContext ctx{
             .sliceEnd = slicePtr->getSliceEnd(),
-            .now = newGlobalWaterMark,
+            /// Wall clock, NOT the event-time watermark: a predictive policy compares this against the
+            /// predictor's wall-clock trigger estimate, so the two must share a clock domain.
+            .now = now,
+            /// The predictor lives inside the policy, so only the policy can fill this in; it stays
+            /// INVALID here and PressureSpillPolicy::decide() computes the estimate itself.
             .predictedTriggerWallClock = Timestamp{Timestamp::INVALID_VALUE},
             .residentBytes = serializer.residentBytes(*slicePtr),
             .spilledBytes = 0,
