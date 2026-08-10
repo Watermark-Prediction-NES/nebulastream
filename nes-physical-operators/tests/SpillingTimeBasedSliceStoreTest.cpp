@@ -13,6 +13,8 @@
 */
 
 #include <cstdint>
+#include <expected>
+#include <future>
 #include <memory>
 #include <typeindex>
 #include <vector>
@@ -28,9 +30,11 @@
 #include <SliceStore/Spill/InMemoryStorageBackend.hpp>
 #include <SliceStore/Spill/NLJSliceStateSerializer.hpp>
 #include <SliceStore/Spill/PressureSpillPolicy.hpp>
+#include <SliceStore/Spill/SliceStateSerializer.hpp>
 #include <SliceStore/Spill/SliceStateSerializerRegistry.hpp>
 #include <SliceStore/Spill/SpillObjectKey.hpp>
 #include <SliceStore/Spill/SpillPolicy.hpp>
+#include <SliceStore/Spill/StorageBackend.hpp>
 #include <SliceStore/SpillingTimeBasedSliceStore.hpp>
 #include <Time/Timestamp.hpp>
 #include <Util/Logger/LogLevel.hpp>
@@ -262,6 +266,59 @@ TEST_F(SpillingTimeBasedSliceStoreTest, SpillsSlicesCreatedDirectlyOnTheInnerSto
     EXPECT_TRUE(store->isSliceSpilled(SliceEnd{100}));
     EXPECT_EQ(slice.getNumberOfTuplesLeft(), 0U);
     EXPECT_EQ(store->statistics().spills.load(), 1U);
+}
+
+/// A serializer that refuses a slice (HJSliceStateSerializer rejects hash maps with var-sized pages)
+/// must leave the slice resident and the query running, not propagate out of the GC tick.
+TEST_F(SpillingTimeBasedSliceStoreTest, UnspillableSliceStaysResidentAndDoesNotThrow)
+{
+    class RefusingSerializer final : public SliceStateSerializer
+    {
+    public:
+        std::future<std::expected<SpilledSliceHandle, IoError>> spill(Slice&, StorageBackend&, AbstractBufferProvider&) override
+        {
+            std::promise<std::expected<SpilledSliceHandle, IoError>> p;
+            p.set_value(std::unexpected{IoError{IoErrorCode::TransientIo, "refused"}});
+            return p.get_future();
+        }
+
+        std::future<std::expected<void, IoError>>
+        restore(Slice&, const SpilledSliceHandle&, StorageBackend&, AbstractBufferProvider&) override
+        {
+            std::promise<std::expected<void, IoError>> p;
+            p.set_value({});
+            return p.get_future();
+        }
+
+        [[nodiscard]] uint64_t residentBytes(const Slice&) const noexcept override { return 1024; }
+    };
+
+    RefusingSerializer refusing;
+    auto inner = std::make_unique<DefaultTimeBasedSliceStore>(WindowSize, WindowSlide, SliceCacheConfiguration{});
+    auto store = std::make_unique<SpillingTimeBasedSliceStore>(
+        std::move(inner),
+        std::make_unique<PressureSpillPolicy>(/*high*/ 0.8),
+        std::make_shared<InMemoryStorageBackend>(),
+        std::make_unique<ConstantPressureSensor>(0.95),
+        *bufferManager,
+        refusing);
+    store->incrementNumberOfInputPipelines();
+
+    auto created = store->getSlicesOrCreate(
+        Timestamp{50},
+        [](SliceStart start, SliceEnd end) -> std::vector<std::shared_ptr<Slice>>
+        {
+            std::vector<std::shared_ptr<Slice>> out;
+            out.push_back(std::make_shared<NLJSlice>(start, end, NumWorkerThreads));
+            return out;
+        });
+    auto& slice = static_cast<NLJSlice&>(*created.front());
+    slice.getPagedVectorRefLeft(WorkerThreadId{0})->adoptPages({makeFilledBuffer(7, 0x11)});
+
+    EXPECT_NO_THROW(store->garbageCollectSlicesAndWindows(Timestamp{100}));
+    EXPECT_EQ(store->numSpilledSlices(), 0U);
+    EXPECT_EQ(slice.getNumberOfTuplesLeft(), 7U) << "a refused spill must leave the slice intact";
+    EXPECT_EQ(store->statistics().spillFailures.load(), 1U);
 }
 
 TEST_F(SpillingTimeBasedSliceStoreTest, SpilledSlicesAreNotDoubleSpilled)

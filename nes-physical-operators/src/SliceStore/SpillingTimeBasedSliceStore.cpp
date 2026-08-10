@@ -186,12 +186,20 @@ void SpillingTimeBasedSliceStore::garbageCollectSlicesAndWindows(Timestamp newGl
             .spilledBytes = 0,
             .windowState = WindowInfoState::WINDOW_FILLING,
         };
-        const auto decision = spillPolicy->decide(ctx, pressure);
-        if (decision == SpillDecision::Spill)
+        if (spillPolicy->decide(ctx, pressure) != SpillDecision::Spill)
         {
-            auto spilled = spillSliceSynchronous(*slicePtr);
+            continue;
+        }
+
+        /// A spill that fails is not a query error. SliceStateSerializer::spill guarantees the slice's
+        /// resident pages are intact on failure, so the slice simply stays in memory and the next tick
+        /// can retry. Some slices can never be spilled at all — HJSliceStateSerializer rejects hash
+        /// maps holding var-sized pages — and throwing there would kill every query whose join payload
+        /// contains a VARSIZED field the moment memory got tight.
+        if (auto spilled = spillSliceSynchronous(*slicePtr))
+        {
             spillHandlesBySliceEnd.withWLock(
-                [&](auto& map) { map[sliceEndKey] = HandleEntry{.state = HandleState::Spilled, .handle = std::move(spilled)}; });
+                [&](auto& map) { map[sliceEndKey] = HandleEntry{.state = HandleState::Spilled, .handle = std::move(spilled.value())}; });
         }
     }
 
@@ -288,14 +296,18 @@ void SpillingTimeBasedSliceStore::restoreSliceSynchronous(Slice& slice, const Sp
     stats.addRestore(handle.totalBytes, static_cast<uint64_t>(elapsed));
 }
 
-SpilledSliceHandle SpillingTimeBasedSliceStore::spillSliceSynchronous(Slice& slice)
+std::optional<SpilledSliceHandle> SpillingTimeBasedSliceStore::spillSliceSynchronous(Slice& slice)
 {
     const auto started = std::chrono::steady_clock::now();
     auto fut = serializer.spill(slice, *backend, buffers);
     auto result = fut.get();
     if (!result.has_value())
     {
-        throw CannotSerialize("SpillingTimeBasedSliceStore: spill failed: {}", result.error().message);
+        /// Recoverable by construction: the serializer leaves the slice's pages intact on failure, so
+        /// the caller keeps it resident. Counted rather than thrown — see the call site.
+        stats.spillFailures.fetch_add(1, std::memory_order_relaxed);
+        NES_TRACE("SpillingTimeBasedSliceStore: spill skipped, slice stays resident: {}", result.error().message);
+        return std::nullopt;
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count();
     stats.addSpill(result.value().totalBytes, static_cast<uint64_t>(elapsed));

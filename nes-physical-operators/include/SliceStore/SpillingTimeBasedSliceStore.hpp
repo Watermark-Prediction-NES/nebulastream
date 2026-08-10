@@ -115,9 +115,10 @@ private:
     /// fails — a spilled slice we cannot read back is lost state.
     void restoreSliceSynchronous(Slice& slice, const SpilledSliceHandle& handle);
 
-    /// Spill a slice synchronously. Returns the handle on success. Throws CannotSerialize if the
-    /// backend spill itself fails.
-    SpilledSliceHandle spillSliceSynchronous(Slice& slice);
+    /// Spill a slice synchronously. Returns the handle on success, or nullopt when the serializer
+    /// declined or failed — in which case the slice's pages are still intact and it stays resident.
+    /// Never throws: a slice that cannot be spilled is not a query error, only lost headroom.
+    std::optional<SpilledSliceHandle> spillSliceSynchronous(Slice& slice);
 
     std::unique_ptr<WindowSlicesStoreInterface> inner;
     std::unique_ptr<SpillPolicy> spillPolicy;
