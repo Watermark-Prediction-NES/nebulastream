@@ -14,6 +14,7 @@
 
 #include <Join/HashJoin/HJBuildPhysicalOperator.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -94,12 +95,23 @@ void HJBuildPhysicalOperator::execute(ExecutionContext& ctx, Record& record) con
                     entry, hashMapBuffer.asArg(), hashMapOptions.fieldKeys, hashMapOptions.fieldValues};
                 const auto state = entryRefReset.getValueMemArea();
                 const nautilus::val<uint64_t> tupleSize = getSizeInBytes(tupleLayout->getSchema());
+                const nautilus::val<uint64_t> statePageSize = hashMapOptions.pageSize;
                 nautilus::invoke(
-                    +[](TupleBuffer* hashMapBuf, uint32_t* valueMemArea, AbstractBufferProvider* bufferProvider, uint64_t tupleSize) -> void
+                    +[](TupleBuffer* hashMapBuf,
+                        uint32_t* valueMemArea,
+                        AbstractBufferProvider* bufferProvider,
+                        uint64_t tupleSize,
+                        uint64_t statePageSize) -> void
                     {
                         if (auto pagedVectorBuffer = bufferProvider->getUnpooledBuffer(PagedVector::getMainBufferSize()))
                         {
-                            PagedVector::init(pagedVectorBuffer.value(), bufferProvider->getBufferSize(), tupleSize);
+                            /// One of these paged vectors exists per distinct key per hash map, so its pages follow the
+                            /// state page-size knob. Sizing them by the operator buffer size instead multiplies the join
+                            /// state by bufferSize/pageSize: with 128KiB operator buffers, a Nexmark bid join allocates
+                            /// ~57MB per 10s slice for a few KB of tuples, and the whole unpooled budget dies within
+                            /// seconds whenever garbage collection falls a few hundred slices behind the build.
+                            const auto pageSize = std::max(statePageSize, PagedVector::Page::getHeaderSize() + (2 * tupleSize));
+                            PagedVector::init(pagedVectorBuffer.value(), pageSize, tupleSize);
                             auto childIndex = hashMapBuf->storeChildBuffer(pagedVectorBuffer.value());
                             *valueMemArea = childIndex.getRawValue();
                             return;
@@ -109,7 +121,8 @@ void HJBuildPhysicalOperator::execute(ExecutionContext& ctx, Record& record) con
                     hashMapBuffer.asArg(),
                     static_cast<nautilus::val<uint32_t*>>(state),
                     ctx.pipelineMemoryProvider.bufferProvider,
-                    tupleSize);
+                    tupleSize,
+                    statePageSize);
             },
             ctx.pipelineMemoryProvider.bufferProvider);
 

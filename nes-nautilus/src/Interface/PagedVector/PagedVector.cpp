@@ -180,8 +180,11 @@ void PagedVector::appendPageIfFull(AbstractBufferProvider* bufferProvider)
             return;
         }
     }
-    /// Either no pages exist, or the last page is full so allocate a new one
-    addNewPage(bufferProvider, bufferProvider->getBufferSize());
+    /// Either no pages exist, or the last page is full so allocate a new one. The page must be exactly
+    /// as large as the capacity computed at init assumes: allocating bufferProvider->getBufferSize()
+    /// instead silently over-allocates every page whenever the vector was initialized with a smaller
+    /// page size (the capacity check above would never let the extra space be used).
+    addNewPage(bufferProvider, getPageBufferSize());
 }
 
 size_t PagedVector::getPageIndex(const uint64_t recordIndex) const
