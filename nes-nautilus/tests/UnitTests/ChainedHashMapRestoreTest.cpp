@@ -233,7 +233,8 @@ TEST(ChainedHashMapRestoreTest, RebuildChainsRepointsTheEndSentinel)
     /// Straight off the wire it still points into the encoded map's buffer, which is what this catches.
     const auto memory = restoredBuffer.getAvailableMemoryArea();
     /// NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    const auto* const sentinel = reinterpret_cast<const std::byte*>(restored.getChain(ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets)));
+    const auto* const sentinel
+        = reinterpret_cast<const std::byte*>(restored.getChain(ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets)));
     EXPECT_GE(sentinel, memory.data());
     EXPECT_LT(sentinel, memory.data() + memory.size());
 }
