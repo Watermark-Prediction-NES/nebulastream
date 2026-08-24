@@ -39,8 +39,9 @@ public:
     UIntOption slicePoolCapacity
         = {"slice_pool_capacity",
            "0",
-           "Upper bound on the number of retired slices one store keeps for reuse. 0 means the steady-state number of live slices, "
-           "windowSize / windowSlide."};
+           "Upper bound on the number of retired slices one store keeps for reuse, PER POOL SHARD - the pool has "
+           "one shard per worker thread, so a store holds up to number_of_worker_threads times this many. 0 means "
+           "the steady-state number of live slices, windowSize / windowSlide."};
 
     BoolOption enableSliceGroupCreation
         = {"enable_slice_group_creation",

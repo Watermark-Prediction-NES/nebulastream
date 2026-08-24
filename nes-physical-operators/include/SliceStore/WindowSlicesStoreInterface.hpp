@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -67,6 +71,12 @@ struct SliceStoreStatistics
     uint64_t wastedSliceCreations{0};
     uint64_t sliceCreationNanos{0};
 };
+
+/// Storage ceiling for the slice pool's shards, not the shard count itself: the live count is
+/// setSlicePoolShards(numberOfWorkerThreads). A fixed array keeps the shards non-movable, so no
+/// resize can race a thread that is mid-push. Threads beyond this many share a shard by modulo,
+/// which costs contention, never correctness. Raise it if worker counts routinely exceed it.
+inline constexpr std::size_t MaxSlicePoolShards = 64;
 
 /// This is the interface for storing windows and slices in a window-based operator
 /// It provides an interface to operate on slices and windows for a time-based window operator, e.g., join or aggregation
@@ -125,15 +135,43 @@ public:
     /// Returns the window size
     [[nodiscard]] virtual uint64_t getWindowSize() const = 0;
 
+    /// Gives the slice pool one shard per worker thread, so recycling does not serialise every thread on
+    /// one lock. Called from the owning handler's start(), which is the first point the worker-thread
+    /// count exists and still precedes any tuple reaching the store - so this never races a pooling
+    /// thread. Repeated calls (one per input pipeline) are idempotent for a given worker count.
+    void setSlicePoolShards(const uint64_t numberOfWorkerThreads)
+    {
+        activeSlicePoolShards.store(std::clamp<std::size_t>(numberOfWorkerThreads, 1, MaxSlicePoolShards), std::memory_order_relaxed);
+    }
+
 protected:
     WindowSlicesStoreInterface(const uint64_t slicePoolCapacity, const bool sliceRecyclingEnabled)
         : slicePoolCapacity(slicePoolCapacity), sliceRecyclingEnabled(sliceRecyclingEnabled)
     {
     }
 
-    /// Retired slices waiting for reuse. Capped at the steady-state number of live slices; excess retirees
-    /// are destroyed. Pooled hash-map slices keep the page high-water mark of their previous tenants.
-    folly::Synchronized<std::vector<std::shared_ptr<Slice>>> slicePool;
+    /// Retired slices waiting for reuse, sharded so that worker threads do not serialise on one lock:
+    /// a single shared pool made recycling a net loss at 16 threads (every creation miss took the same
+    /// wlock). Each thread only ever touches its own shard - no stealing, so a shard whose thread goes
+    /// idle strands its slices until deleteState. Per-shard free lists if that stranding ever shows up.
+    /// slicePoolCapacity is PER SHARD, so the store holds at most activeSlicePoolShards times that many.
+    /// Pooled hash-map slices keep the page high-water mark of their previous tenants.
+    std::array<folly::Synchronized<std::vector<std::shared_ptr<Slice>>>, MaxSlicePoolShards> slicePool;
+
+    /// One shard until the handler learns the worker-thread count; see setSlicePoolShards.
+    std::atomic<std::size_t> activeSlicePoolShards{1};
+
+    /// The calling thread's shard. The thread's index is handed out once and shared across every slice
+    /// store in the process - worker threads are long-lived, so it stays stable for the life of a query.
+    folly::Synchronized<std::vector<std::shared_ptr<Slice>>>& poolShard()
+    {
+        static std::atomic<std::size_t> nextShard{0};
+        thread_local const std::size_t ThreadShard = nextShard.fetch_add(1, std::memory_order_relaxed);
+        /// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index) the modulo is by
+        /// activeSlicePoolShards, clamped to [1, MaxSlicePoolShards], so the index is always in range.
+        return slicePool[ThreadShard % activeSlicePoolShards.load(std::memory_order_relaxed)];
+    }
+
     uint64_t slicePoolCapacity;
     bool sliceRecyclingEnabled;
     std::function<void(SliceEnd)> onSliceRetired;

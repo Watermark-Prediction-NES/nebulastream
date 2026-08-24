@@ -72,6 +72,9 @@ WindowBasedOperatorHandler::WindowBasedOperatorHandler(
 void WindowBasedOperatorHandler::start(PipelineExecutionContext& pipelineExecutionContext, uint32_t)
 {
     numberOfWorkerThreads = pipelineExecutionContext.getNumberOfWorkerThreads();
+    /// One slice-pool shard per worker thread. Safe here and nowhere later: no tuple has reached the
+    /// store yet, so no thread can be mid-push while the shard count changes.
+    sliceAndWindowStore->setSlicePoolShards(numberOfWorkerThreads);
     /// Measures what compression and spilling cost on this machine. Until this runs, a cost-model
     /// predictor deliberately reduces nothing, so it has to happen before any state is built up.
     stateReduction->calibrate();
