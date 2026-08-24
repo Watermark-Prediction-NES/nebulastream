@@ -38,7 +38,8 @@ class NoCompressionAlgorithm final : public CompressionAlgorithm
 public:
     [[nodiscard]] std::vector<std::byte> compress(const std::span<const std::byte> raw) const override { return {raw.begin(), raw.end()}; }
 
-    [[nodiscard]] std::vector<std::byte> decompress(const std::span<const std::byte> compressed, const uint64_t rawSize) const override
+    [[nodiscard]] std::vector<std::byte>
+    decompress(const std::span<const std::byte> compressed, [[maybe_unused]] const uint64_t rawSize) const override
     {
         INVARIANT(compressed.size() == rawSize, "Uncompressed payload of {} bytes should have been {}", compressed.size(), rawSize);
         return {compressed.begin(), compressed.end()};
