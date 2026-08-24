@@ -1,0 +1,27 @@
+# name: benchmark_memory/SmartGrid.test
+# description: Queries from the Paper: "LightSaber: Efficient Window Aggregation on Multi-core Processors (Theodorakis et al.)" (in-memory source replay, output discarded)
+# The paper uses the dataset from DEBS 2014 Grand Challenge https://debs.org/grand-challenges/2014/ but creates custom queries
+# groups: [benchmark_memory, large]
+
+# Source definitions
+CREATE LOGICAL SOURCE smartGrid(creationTS UINT64 NOT NULL, value FLOAT32 NOT NULL, property FLOAT32 NOT NULL, plugId INT16 NOT NULL, householdId INT16 NOT NULL, houseId INT16 NOT NULL);
+CREATE PHYSICAL SOURCE FOR smartGrid TYPE Memory;
+ATTACH FILE large/smartgrid/smartgrid-data_974K.csv
+
+CREATE SINK sgSink(start UINT64 NOT NULL, end UINT64 NOT NULL, plugId INT16 NOT NULL, householdId INT16 NOT NULL, houseId INT16 NOT NULL, avg_value FLOAT64 NOT NULL) TYPE Void;
+
+# Query 1: 1 hour window with 1 second slide keeps ~3600 slices alive - the heaviest slice-store stress in the suite
+SELECT start, end, plugId, householdId, houseId, AVG(value) AS avg_value
+FROM smartGrid
+GROUP BY (plugId, householdId, houseId)
+WINDOW SLIDING(creationTS, SIZE 1 HOUR, ADVANCE BY 1 SEC)
+INTO sgSink;
+----
+
+# Query 2: 128 second window with 1 second slide (~128 slices alive)
+SELECT start, end, plugId, householdId, houseId, AVG(value) AS avg_value
+FROM smartGrid
+GROUP BY (plugId, householdId, houseId)
+WINDOW SLIDING(creationTS, SIZE 128 SEC, ADVANCE BY 1 SEC)
+INTO sgSink;
+----

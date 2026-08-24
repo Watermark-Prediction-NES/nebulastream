@@ -1,0 +1,81 @@
+# name: benchmark_memory/Nexmark_with_varsized.test
+# description: Nexmark benchmark taken from https://github.com/nexmark/nexmark/tree/master/nexmark-flink/src/main/resources/queries (in-memory source replay, output discarded)
+# We have used https://github.com/risingwavelabs/nexmark-rs to generate the source csv files
+# groups: [benchmark_memory, large]
+
+# Source definition. We have removed some columns that are not needed in our queries
+CREATE LOGICAL SOURCE bid(timestamp_bid UINT64 NOT NULL, auctionId INT32 NOT NULL, bidder INT32 NOT NULL, price FLOAT64 NOT NULL);
+CREATE PHYSICAL SOURCE FOR bid TYPE Memory;
+ATTACH FILE large/nexmark/bid_6GB.csv
+
+CREATE LOGICAL SOURCE auction(timestamp_auction UINT64 NOT NULL, id INT32 NOT NULL, initialbid INT32 NOT NULL, reserve INT32 NOT NULL, expires UINT64 NOT NULL, seller INT32 NOT NULL, category INT32 NOT NULL);
+CREATE PHYSICAL SOURCE FOR auction TYPE Memory;
+ATTACH FILE large/nexmark/auction_707MB.csv
+
+CREATE LOGICAL SOURCE person(id INT32 NOT NULL, name VARSIZED NOT NULL, email_address VARSIZED NOT NULL, credit_card VARSIZED NOT NULL, city VARSIZED NOT NULL, state VARSIZED NOT NULL, timestamp_person UINT64 NOT NULL, extra VARSIZED NOT NULL);
+CREATE PHYSICAL SOURCE FOR person TYPE Memory;
+ATTACH FILE large/nexmark/person_840MB.csv
+
+CREATE SINK bidSink(timestamp_bid UINT64 NOT NULL, auctionId INT32 NOT NULL, bidder INT32 NOT NULL, price FLOAT64 NOT NULL)  TYPE Void;
+CREATE SINK q1Sink(timestamp_bid UINT64 NOT NULL, auctionId INT32 NOT NULL, bidder INT32 NOT NULL, price FLOAT64 NOT NULL)  TYPE Void;
+CREATE SINK q2Sink(auctionId INT32 NOT NULL, price FLOAT64 NOT NULL)  TYPE Void;
+CREATE SINK q5Sink(start UINT64 NOT NULL, end UINT64 NOT NULL, auctionId INT32 NOT NULL, num UINT64 NOT NULL, max_tmp UINT64 NOT NULL)  TYPE Void;
+CREATE SINK q8Sink(start UINT64 NOT NULL, end UINT64 NOT NULL, id INT32 NOT NULL, name VARSIZED NOT NULL)  TYPE Void;
+CREATE SINK q8VariantSink(start UINT64 NOT NULL, end UINT64 NOT NULL, timestamp_bid UINT64 NOT NULL, auctionId INT32 NOT NULL, bidder INT32 NOT NULL, price FLOAT64 NOT NULL, timestamp_auction UINT64 NOT NULL, id INT32 NOT NULL, initialbid INT32 NOT NULL, reserve INT32 NOT NULL, expires UINT64 NOT NULL, seller INT32 NOT NULL, category INT32 NOT NULL)  TYPE Void;
+
+
+# Query 0
+SELECT * FROM bid INTO bidSink;
+----
+
+# Query 1
+SELECT timestamp_bid, auctionId, bidder, price * 908 / 1000 AS price FROM bid INTO q1Sink;
+----
+
+# Query 2
+SELECT auctionId, price FROM bid WHERE auctionId % 123 = 0 INTO q2Sink;
+----
+
+# Query 5
+SELECT start, end, auctionId, num, max_tmp
+FROM (SELECT auctionId, num, start as auction_start, end as auction_end
+      FROM (SELECT auctionId, COUNT(auctionId) AS num, start, end
+            FROM bid
+            GROUP BY auctionId
+            WINDOW SLIDING(timestamp_bid, SIZE 10 SEC, ADVANCE BY 2 SEC)))
+INNER JOIN (SELECT max_tmp, start as bid_start, end as bid_end
+              FROM (SELECT MAX(num_ids) AS max_tmp, start, end
+                    FROM
+                          (SELECT auctionId, COUNT(auctionId) AS num_ids, start
+                           FROM bid
+                           GROUP BY auctionId
+                           WINDOW SLIDING(timestamp_bid, SIZE 10 SEC, ADVANCE BY 2 SEC))
+                    WINDOW TUMBLING(start, SIZE 2 SEC)))
+ON num == max_tmp
+WINDOW TUMBLING(auction_start, bid_start, SIZE 2 SEC)
+INTO q5Sink;
+----
+
+
+# Query 8
+# Until PR #755 is not merged, we need to do another subquery to project the required fields
+# auction.id is renamed to auction_id to avoid collision with person.id in the join schema
+SELECT start, end, id, name
+FROM (
+        SELECT *
+            FROM (SELECT * FROM person)
+        INNER JOIN
+            (SELECT id AS auction_id, timestamp_auction, initialbid, reserve, expires, seller, category FROM auction)
+        ON id = seller WINDOW TUMBLING (timestamp_person, timestamp_auction, size 10 sec)
+    )
+INTO q8Sink;
+----
+
+
+# Query 8 Variant (We are not using the actual Q8 but a variant, as we have swapped the Person stream with the Bid stream)
+SELECT start, end, timestamp_bid, auctionId, bidder, price, timestamp_auction, id, initialbid, reserve, expires, seller, category
+    FROM (SELECT * FROM bid)
+INNER JOIN
+    (SELECT * FROM auction)
+ON auctionId = id WINDOW TUMBLING (timestamp_bid, timestamp_auction, size 10 sec) INTO q8VariantSink;
+----
