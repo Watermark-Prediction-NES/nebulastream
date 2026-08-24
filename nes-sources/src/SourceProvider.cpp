@@ -47,8 +47,13 @@ SourceProvider::lower(OriginId originId, BackpressureListener backpressureListen
             : defaultMaxInflightBuffers;
         SourceRuntimeConfiguration runtimeConfig{maxInflightBuffers};
 
-        return std::make_unique<SourceHandle>(
+        auto sourceHandle = std::make_unique<SourceHandle>(
             std::move(backpressureListener), std::move(originId), std::move(runtimeConfig), bufferPool, std::move(source));
+        if (not sourceHandle->setup())
+        {
+            throw CannotOpenSource("Source setup failed for source descriptor type: {}", sourceDescriptor.getSourceType());
+        }
+        return sourceHandle;
     }
     throw UnknownSourceType("unknown source descriptor type: {}", sourceDescriptor.getSourceType());
 }
