@@ -141,16 +141,16 @@ public:
     ///
     /// The chains, the `next` links and the sentinel are the only raw pointers this hash map stores, so
     /// they are the only thing that does not survive being written to bytes and read back at a different
-    /// address. Everything else the map needs — page count, entry size, entries per page, and each
-    /// entry's own hash — lives in the buffers themselves, which is enough to rebuild all of it.
+    /// address. Page count and each entry's hash live in the buffers; the sizing comes from the config
+    /// the map was init()ed with, which together is enough to rebuild all of it.
     ///
     /// Call this exactly once on a map restored from BufferTreeCodec::read, before any lookup. Calling it
     /// on a live map is a no-op in effect but pointless work.
-    void rebuildChains();
+    void rebuildChains(const ChainedHashMapConfig& config);
 
     /// Empties the map while keeping all of its memory: chains are nulled, the record count drops to 0,
     /// and every entry and var-sized page is retained with its fill level reset, ready for reuse.
-    void clear();
+    void clear(const ChainedHashMapConfig& config);
 
     /// @warning Be super careful with this. Sometimes you need a pointer to the TupleBuffer but you should never alter it outside of this
     /// view and without using its access methods

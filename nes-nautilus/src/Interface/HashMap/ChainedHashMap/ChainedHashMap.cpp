@@ -380,13 +380,13 @@ ChainedHashMapEntry* ChainedHashMap::getChain(const uint64_t pos)
     return chainsBegin()[pos]; /// NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 }
 
-void ChainedHashMap::clear()
+void ChainedHashMap::clear(const ChainedHashMapConfig& config)
 {
-    PRECONDITION(getStatus() == VALID_CHM, "Hash map must be valid to be cleared.");
+    PRECONDITION(header().status == VALID_CHM, "Hash map must be valid to be cleared.");
 
-    const auto numberOfChains = getNumberOfChains();
-    auto chainsArray = chains();
-    std::ranges::fill(chainsArray, nullptr);
+    const auto numberOfChains = calculateNumberOfChains(config.numberOfBuckets);
+    auto* const chainsArray = chainsBegin();
+    std::ranges::fill(std::span{chainsArray, numberOfChains}, nullptr);
     /// Same self-referential end sentinel init() writes; see rebuildChains().
     chainsArray[numberOfChains]
         = reinterpret_cast<ChainedHashMapEntry*>(&chainsArray[numberOfChains]); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -407,21 +407,21 @@ void ChainedHashMap::clear()
     header().numRecords = 0;
 }
 
-void ChainedHashMap::rebuildChains()
+void ChainedHashMap::rebuildChains(const ChainedHashMapConfig& config)
 {
-    PRECONDITION(getStatus() == VALID_CHM, "Hash map must be valid to rebuild its chains.");
+    PRECONDITION(header().status == VALID_CHM, "Hash map must be valid to rebuild its chains.");
 
-    const auto numberOfChains = getNumberOfChains();
-    auto chainsArray = chains();
-    std::ranges::fill(chainsArray, nullptr);
+    const auto numberOfChains = calculateNumberOfChains(config.numberOfBuckets);
+    auto* const chainsArray = chainsBegin();
+    std::ranges::fill(std::span{chainsArray, numberOfChains}, nullptr);
     /// Same self-referential end sentinel init() writes. It points at its own slot, so it has to be
     /// re-derived from the restored buffer's address rather than carried over from the old one.
     chainsArray[numberOfChains]
         = reinterpret_cast<ChainedHashMapEntry*>(&chainsArray[numberOfChains]); /// NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 
     const auto numberOfPages = getNumberOfPages();
-    const auto entrySize = getEntrySize();
-    const auto mask = getMask();
+    const auto entrySize = config.entrySize;
+    const auto mask = calculateMask(config.numberOfBuckets);
 
     /// insertEntry appends entries page by page and pushes each one onto the head of its chain, so
     /// replaying them in that same insertion order reproduces the original chain order exactly. That

@@ -111,7 +111,7 @@ bool HashMapSlice::resetForReuse()
     {
         if (hashMapBuffersState[pos] == HashMapBufferState::INITIALIZED)
         {
-            ChainedHashMap::load(hashMapBuffers[pos]).clear();
+            ChainedHashMap::load(hashMapBuffers[pos]).clear(hashMapConfig);
         }
     }
     return true;
@@ -123,7 +123,8 @@ bool HashMapSlice::matchesLayout(
     const auto argsConfig = toChainedHashMapConfig(args);
     return numHashmapsPerInputStream == numberOfHashMaps and numInputStreams == numberOfInputStreams
         and hashMapConfig.entrySize == argsConfig.entrySize and hashMapConfig.pageSize == argsConfig.pageSize
-        and hashMapConfig.bufferSize() == argsConfig.bufferSize();
+        and hashMapConfig.numberOfBuckets == argsConfig.numberOfBuckets
+        and hashMapConfig.bloomFilterMemAreaSize() == argsConfig.bloomFilterMemAreaSize();
 }
 
 uint64_t HashMapSlice::residentBytes() const
@@ -161,7 +162,7 @@ void HashMapSlice::deserializeState(std::span<const std::byte> in, AbstractBuffe
             continue;
         }
         auto hashMap = ChainedHashMap::load(hashMapBuffers[pos]);
-        hashMap.rebuildChains();
+        hashMap.rebuildChains(hashMapConfig);
     }
     reduced = false;
 }

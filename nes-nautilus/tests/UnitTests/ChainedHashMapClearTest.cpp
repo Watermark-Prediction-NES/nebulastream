@@ -22,6 +22,8 @@
 #include <tuple>
 
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMap.hpp>
+#include <Interface/HashMap/ChainedHashMap/ChainedHashMapConfig.hpp>
+#include <Interface/HashMap/HashMap.hpp>
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/Allocator/NesDefaultMemoryAllocator.hpp>
 #include <Runtime/BufferManager.hpp>
@@ -46,6 +48,10 @@ constexpr uint64_t NUMBER_OF_BUCKETS = 64;
 constexpr uint64_t PAGE_SIZE = 200;
 constexpr uint64_t NUMBER_OF_ENTRIES = 97;
 
+/// The map no longer carries its own sizing, so every call that needs it is handed this one config.
+const ChainedHashMapConfig CONFIG{
+    .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE, .numberOfBuckets = NUMBER_OF_BUCKETS, .pageSize = PAGE_SIZE};
+
 std::shared_ptr<AbstractBufferProvider> makeBufferManager()
 {
     return BufferManager::create(
@@ -58,19 +64,29 @@ std::shared_ptr<AbstractBufferProvider> makeBufferManager()
 
 TupleBuffer makeInitializedMapBuffer(AbstractBufferProvider& bufferProvider)
 {
-    const ChainedHashMapConfig config{
-        .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE, .numberOfBuckets = NUMBER_OF_BUCKETS, .pageSize = PAGE_SIZE};
-    auto mainBuffer = bufferProvider.getUnpooledBuffer(config.bufferSize());
+    auto mainBuffer
+        = bufferProvider.getUnpooledBuffer(ChainedHashMap::calculateBufferSize(CONFIG.numberOfBuckets, CONFIG.bloomFilterMemAreaSize()));
     EXPECT_TRUE(mainBuffer.has_value());
-    ChainedHashMap::init(mainBuffer.value(), config);
+    ChainedHashMap::init(mainBuffer.value(), CONFIG);
     return mainBuffer.value();
+}
+
+AbstractHashMapEntry* insert(ChainedHashMap& hashMap, const uint64_t hash, AbstractBufferProvider* bufferProvider)
+{
+    return hashMap.insertEntry(
+        hash,
+        bufferProvider,
+        CONFIG.entrySize,
+        CONFIG.entriesPerPage(),
+        CONFIG.pageSize,
+        ChainedHashMap::calculateMask(CONFIG.numberOfBuckets));
 }
 
 void insertEntries(ChainedHashMap& hashMap, AbstractBufferProvider& bufferProvider, const uint64_t count)
 {
     for (uint64_t i = 0; i < count; ++i)
     {
-        std::ignore = hashMap.insertEntry(i * 7, &bufferProvider);
+        std::ignore = insert(hashMap, i * 7, &bufferProvider);
     }
 }
 }
@@ -84,11 +100,11 @@ TEST(ChainedHashMapClearTest, ClearEmptiesTheMapAndKeepsPages)
     const auto pagesBeforeClear = hashMap.getNumberOfPages();
     ASSERT_GT(pagesBeforeClear, 1U) << "test is pointless if everything fits on one page";
 
-    hashMap.clear();
+    hashMap.clear(CONFIG);
 
     EXPECT_EQ(hashMap.getTotalNumberOfRecords(), 0U);
     EXPECT_EQ(hashMap.getNumberOfPages(), pagesBeforeClear);
-    for (uint64_t pos = 0; pos < hashMap.getNumberOfChains(); ++pos)
+    for (uint64_t pos = 0; pos < ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets); ++pos)
     {
         EXPECT_EQ(hashMap.getChain(pos), nullptr);
     }
@@ -106,11 +122,11 @@ TEST(ChainedHashMapClearTest, ReinsertAfterClearReusesRetainedPages)
     insertEntries(hashMap, *bufferManager, NUMBER_OF_ENTRIES);
     const auto pagesBeforeClear = hashMap.getNumberOfPages();
 
-    hashMap.clear();
+    hashMap.clear(CONFIG);
 
     /// The very first insert lands on retained page 0; without the high-water-mark check in insertEntry
     /// it would append a redundant page instead.
-    std::ignore = hashMap.insertEntry(0, bufferManager.get());
+    std::ignore = insert(hashMap, 0, bufferManager.get());
     EXPECT_EQ(hashMap.getNumberOfPages(), pagesBeforeClear);
     EXPECT_EQ(hashMap.getPage(0).getNumberOfTuples(), 1U);
 
@@ -127,7 +143,7 @@ TEST(ChainedHashMapClearTest, ClearResetsVarSizedPageFillLevels)
     std::ignore = hashMap.allocateSpaceForVarSized(bufferManager.get(), 100);
     ASSERT_GE(hashMap.getNumberOfVarSizedPages(), 1U);
 
-    hashMap.clear();
+    hashMap.clear(CONFIG);
 
     for (uint64_t pageIdx = 0; pageIdx < hashMap.getNumberOfVarSizedPages(); ++pageIdx)
     {
@@ -141,7 +157,7 @@ TEST(ChainedHashMapClearTest, ClearOnAnEmptyMapIsANoOp)
     auto mainBuffer = makeInitializedMapBuffer(*bufferManager);
     auto hashMap = ChainedHashMap::load(mainBuffer);
 
-    hashMap.clear();
+    hashMap.clear(CONFIG);
 
     EXPECT_EQ(hashMap.getTotalNumberOfRecords(), 0U);
     EXPECT_EQ(hashMap.getNumberOfPages(), 0U);

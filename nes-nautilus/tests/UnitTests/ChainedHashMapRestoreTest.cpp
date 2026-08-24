@@ -28,6 +28,7 @@
 #include <vector>
 
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMap.hpp>
+#include <Interface/HashMap/ChainedHashMap/ChainedHashMapConfig.hpp>
 #include <Runtime/AbstractBufferProvider.hpp>
 #include <Runtime/Allocator/NesDefaultMemoryAllocator.hpp>
 #include <Runtime/BufferManager.hpp>
@@ -60,6 +61,10 @@ constexpr uint64_t NUMBER_OF_BUCKETS = 64;
 constexpr uint64_t PAGE_SIZE = 200;
 constexpr uint64_t NUMBER_OF_ENTRIES = 97;
 
+/// The map no longer carries its own sizing, so every call that needs it is handed this one config.
+const ChainedHashMapConfig CONFIG{
+    .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE, .numberOfBuckets = NUMBER_OF_BUCKETS, .pageSize = PAGE_SIZE};
+
 /// One chain, flattened head-first: the (hash, payload) of every entry in link order.
 using ChainSnapshot = std::vector<std::pair<uint64_t, uint64_t>>;
 
@@ -84,8 +89,8 @@ uint64_t readPayload(ChainedHashMapEntry* entry)
 std::vector<ChainSnapshot> snapshotChains(ChainedHashMap& hashMap)
 {
     std::vector<ChainSnapshot> snapshot;
-    snapshot.reserve(hashMap.getNumberOfChains());
-    for (uint64_t pos = 0; pos < hashMap.getNumberOfChains(); ++pos)
+    snapshot.reserve(ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets));
+    for (uint64_t pos = 0; pos < ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets); ++pos)
     {
         ChainSnapshot chain;
         for (auto* entry = hashMap.getChain(pos); entry != nullptr; entry = entry->next)
@@ -111,7 +116,7 @@ void expectEntriesLiveInOwnPages(ChainedHashMap& hashMap)
     }
 
     uint64_t linkedEntries = 0;
-    for (uint64_t pos = 0; pos < hashMap.getNumberOfChains(); ++pos)
+    for (uint64_t pos = 0; pos < ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets); ++pos)
     {
         for (auto* entry = hashMap.getChain(pos); entry != nullptr; entry = entry->next)
         {
@@ -158,16 +163,21 @@ struct EncodedMap
 EncodedMap buildAndEncode(AbstractBufferProvider& bufferProvider, const std::span<const uint64_t> hashes)
 {
     EncodedMap result;
-    const ChainedHashMapConfig config{
-        .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE, .numberOfBuckets = NUMBER_OF_BUCKETS, .pageSize = PAGE_SIZE};
-    auto mainBuffer = bufferProvider.getUnpooledBuffer(config.bufferSize());
+    auto mainBuffer
+        = bufferProvider.getUnpooledBuffer(ChainedHashMap::calculateBufferSize(CONFIG.numberOfBuckets, CONFIG.bloomFilterMemAreaSize()));
     EXPECT_TRUE(mainBuffer.has_value());
-    ChainedHashMap::init(mainBuffer.value(), config);
+    ChainedHashMap::init(mainBuffer.value(), CONFIG);
 
     auto original = ChainedHashMap::load(mainBuffer.value());
     for (uint64_t i = 0; i < hashes.size(); ++i)
     {
-        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(original.insertEntry(hashes[i], &bufferProvider));
+        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(original.insertEntry(
+            hashes[i],
+            &bufferProvider,
+            CONFIG.entrySize,
+            CONFIG.entriesPerPage(),
+            CONFIG.pageSize,
+            ChainedHashMap::calculateMask(CONFIG.numberOfBuckets)));
         writePayload(entry, i);
     }
 
@@ -203,7 +213,7 @@ TEST(ChainedHashMapRestoreTest, RebuildChainsReproducesEveryChainInOrder)
     ASSERT_EQ(restored.getTotalNumberOfRecords(), NUMBER_OF_ENTRIES);
     ASSERT_EQ(restored.getNumberOfPages(), source.numberOfPages);
 
-    restored.rebuildChains();
+    restored.rebuildChains(CONFIG);
 
     EXPECT_EQ(snapshotChains(restored), source.chains);
     expectEntriesLiveInOwnPages(restored);
@@ -217,13 +227,13 @@ TEST(ChainedHashMapRestoreTest, RebuildChainsRepointsTheEndSentinel)
     std::span<const std::byte> stream{source.encoded};
     auto restoredBuffer = BufferTreeCodec::read(stream, *bufferManager);
     auto restored = ChainedHashMap::load(restoredBuffer);
-    restored.rebuildChains();
+    restored.rebuildChains(CONFIG);
 
     /// The sentinel is self-referential, so after a restore it must point inside the NEW main buffer.
     /// Straight off the wire it still points into the encoded map's buffer, which is what this catches.
     const auto memory = restoredBuffer.getAvailableMemoryArea();
     /// NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    const auto* const sentinel = reinterpret_cast<const std::byte*>(restored.getChain(restored.getNumberOfChains()));
+    const auto* const sentinel = reinterpret_cast<const std::byte*>(restored.getChain(ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets)));
     EXPECT_GE(sentinel, memory.data());
     EXPECT_LT(sentinel, memory.data() + memory.size());
 }
@@ -240,10 +250,10 @@ TEST(ChainedHashMapRestoreTest, RebuildChainsHandlesAnEmptyMap)
 
     /// A slice can be reduced before anything was ever inserted into one of its per-thread maps, so the
     /// no-storage-space path has to be safe rather than tripping the precondition inside getPage().
-    restored.rebuildChains();
+    restored.rebuildChains(CONFIG);
 
     EXPECT_EQ(restored.getTotalNumberOfRecords(), 0U);
-    for (uint64_t pos = 0; pos < restored.getNumberOfChains(); ++pos)
+    for (uint64_t pos = 0; pos < ChainedHashMap::calculateNumberOfChains(CONFIG.numberOfBuckets); ++pos)
     {
         EXPECT_EQ(restored.getChain(pos), nullptr);
     }
@@ -271,7 +281,7 @@ RC_GTEST_PROP(ChainedHashMapRestoreTest, RestoreReproducesWhateverWasInserted, (
     RC_ASSERT(stream.empty());
 
     auto restored = ChainedHashMap::load(restoredBuffer);
-    restored.rebuildChains();
+    restored.rebuildChains(CONFIG);
 
     RC_ASSERT(restored.getTotalNumberOfRecords() == hashes.size());
     RC_ASSERT(restored.getNumberOfPages() == source.numberOfPages);

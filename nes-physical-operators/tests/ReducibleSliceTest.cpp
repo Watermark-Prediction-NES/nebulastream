@@ -173,8 +173,8 @@ void writePayload(ChainedHashMapEntry* entry, const uint64_t payload)
 std::vector<ChainSnapshot> snapshotChains(ChainedHashMap& hashMap)
 {
     std::vector<ChainSnapshot> snapshot;
-    snapshot.reserve(hashMap.getNumberOfChains());
-    for (uint64_t pos = 0; pos < hashMap.getNumberOfChains(); ++pos)
+    snapshot.reserve(ChainedHashMap::calculateNumberOfChains(NUMBER_OF_BUCKETS));
+    for (uint64_t pos = 0; pos < ChainedHashMap::calculateNumberOfChains(NUMBER_OF_BUCKETS); ++pos)
     {
         ChainSnapshot chain;
         for (auto* entry = hashMap.getChain(pos); entry != nullptr; entry = entry->next)
