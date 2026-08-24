@@ -120,7 +120,7 @@ bool HashMapSlice::resetForReuse()
 bool HashMapSlice::matchesLayout(
     const CreateNewHashMapSliceArgs& args, const uint64_t numberOfHashMaps, const uint64_t numberOfInputStreams) const
 {
-    const auto argsConfig = toChainedHashMapConfig(args);
+    const auto& argsConfig = args.config;
     return numHashmapsPerInputStream == numberOfHashMaps and numInputStreams == numberOfInputStreams
         and hashMapConfig.entrySize == argsConfig.entrySize and hashMapConfig.pageSize == argsConfig.pageSize
         and hashMapConfig.numberOfBuckets == argsConfig.numberOfBuckets

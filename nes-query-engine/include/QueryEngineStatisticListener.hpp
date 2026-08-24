@@ -60,7 +60,7 @@ struct TaskEmit : EventBase
         TaskId taskId,
         size_t numberOfProcessedTuples,
         bool formattingTask)
-        : EventBase(threadId, queryId)
+        : EventBase(threadId, std::move(queryId))
         , fromPipeline(fromPipeline)
         , toPipeline(toPipeline)
         , taskId(taskId)

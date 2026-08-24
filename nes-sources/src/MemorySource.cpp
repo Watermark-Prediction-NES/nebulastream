@@ -28,6 +28,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <stdlib.h>
 
 #include <Configurations/Descriptor.hpp>
 #include <Identifiers/Identifier.hpp>

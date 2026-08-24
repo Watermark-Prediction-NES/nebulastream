@@ -50,7 +50,13 @@ constexpr uint64_t NUMBER_OF_ENTRIES = 97;
 
 /// The map no longer carries its own sizing, so every call that needs it is handed this one config.
 const ChainedHashMapConfig CONFIG{
-    .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE, .numberOfBuckets = NUMBER_OF_BUCKETS, .pageSize = PAGE_SIZE};
+    .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE,
+    .numberOfBuckets = NUMBER_OF_BUCKETS,
+    .pageSize = PAGE_SIZE,
+    .bloomFilterParams = std::nullopt,
+    .fieldKeys = {},
+    .fieldValues = {},
+    .hashFunction = nullptr};
 
 std::shared_ptr<AbstractBufferProvider> makeBufferManager()
 {

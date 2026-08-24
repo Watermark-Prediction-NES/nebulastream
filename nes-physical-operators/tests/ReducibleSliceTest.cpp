@@ -186,9 +186,20 @@ std::vector<ChainSnapshot> snapshotChains(ChainedHashMap& hashMap)
     return snapshot;
 }
 
-CreateNewHJSliceArgs hjSliceArgs(AbstractBufferProvider& bufferProvider, const JoinBuildSideType side)
+/// The join build side is no longer part of the slice args: HJSlice takes it per call, on the
+/// getOrCreateHashMapBufferRefForSide() that actually needs it.
+CreateNewHashMapSliceArgs hjSliceArgs(AbstractBufferProvider& bufferProvider)
 {
-    return CreateNewHJSliceArgs{KEY_SIZE, VALUE_SIZE, HASH_MAP_PAGE_SIZE, NUMBER_OF_BUCKETS, &bufferProvider, side, std::nullopt};
+    return CreateNewHashMapSliceArgs{
+        ChainedHashMapConfig{
+            .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE,
+            .numberOfBuckets = NUMBER_OF_BUCKETS,
+            .pageSize = HASH_MAP_PAGE_SIZE,
+            .bloomFilterParams = std::nullopt,
+            .fieldKeys = {},
+            .fieldValues = {},
+            .hashFunction = nullptr},
+        &bufferProvider};
 }
 }
 
@@ -350,7 +361,7 @@ TEST_F(ReducibleSliceTest, SerializingAnAlreadyReducedNLJSliceDoesNothing)
 
 TEST_F(ReducibleSliceTest, HashMapSliceRoundTripsAndChainsStillResolve)
 {
-    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager, JoinBuildSideType::Left), NUMBER_OF_WORKER_THREADS};
+    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager), NUMBER_OF_WORKER_THREADS};
 
     /// Hashes drawn from a narrow range against 16 buckets so that entries actually collide; a map of
     /// single-entry chains would say nothing about chain order.
@@ -396,7 +407,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceLeavesSlotsNoBuildWorkerEverTouched)
     /// Hash map buffers are allocated on first touch, so a slice can be reduced while only some of its
     /// slots exist. The untouched ones must still read back as absent afterwards — not as freshly
     /// allocated empty maps, which is what a slot-state reset would produce.
-    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager, JoinBuildSideType::Left), NUMBER_OF_WORKER_THREADS};
+    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager), NUMBER_OF_WORKER_THREADS};
 
     const auto* const touched = slice.getOrCreateHashMapBufferRefForSide(WorkerThreadId(0), JoinBuildSideType::Left, *bufferManager);
     auto hashMap = ChainedHashMap::load(*touched);
@@ -431,7 +442,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceLeavesSlotsNoBuildWorkerEverTouched)
 TEST_F(ReducibleSliceTest, HashMapSliceRoundTripsWithNothingInItAtAll)
 {
     /// The whole slice can be reduced before any build worker first-touched a single slot.
-    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager, JoinBuildSideType::Left), NUMBER_OF_WORKER_THREADS};
+    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager), NUMBER_OF_WORKER_THREADS};
     ASSERT_EQ(slice.residentBytes(), 0U);
 
     std::vector<std::byte> encoded;
@@ -450,7 +461,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceKeepsTheTwoJoinSidesApart)
 {
     /// HJSlice packs both build sides into one buffer vector, left first. A reduction that reordered the
     /// slots would silently join a stream against itself.
-    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager, JoinBuildSideType::Left), NUMBER_OF_WORKER_THREADS};
+    HJSlice slice{SLICE_START, SLICE_END, hjSliceArgs(*bufferManager), NUMBER_OF_WORKER_THREADS};
 
     for (const auto side : {JoinBuildSideType::Left, JoinBuildSideType::Right})
     {

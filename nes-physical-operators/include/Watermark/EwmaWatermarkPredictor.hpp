@@ -25,6 +25,7 @@ class EwmaWatermarkPredictor final : public WatermarkPredictor
 {
 public:
     /// @param alpha smoothing factor in (0, 1]; higher = react faster to new rates.
+    /// NOLINTNEXTLINE(fuchsia-default-arguments-declarations): the default is the tuned value.
     explicit EwmaWatermarkPredictor(double alpha = 0.3);
 
     void observe(Timestamp watermarkTs, Timestamp wallClock) override;
