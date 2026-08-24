@@ -501,8 +501,13 @@ bool ThreadPool::WorkerThread::operator()(WorkTask& task) const
                     pipeline->successors,
                     [&](const auto& successor)
                     {
-                        pool.statistic->onEvent(
-                            TaskEmit{id, task.queryId, pipeline->id, successor->id, taskId, tupleBuffer.getNumberOfTuples()});
+                        /// Formatting tasks emit a single post-execution TaskEmit carrying the processed-tuple
+                        /// count instead of per-buffer events (see below).
+                        if (not pipeline->stage->formattingTask)
+                        {
+                            pool.statistic->onEvent(
+                                TaskEmit{id, task.queryId, pipeline->id, successor->id, taskId, tupleBuffer.getNumberOfTuples(), false});
+                        }
                         return pool.emitWork(task.queryId, successor, tupleBuffer, TaskCallback{}, continuationPolicy);
                     });
             },
@@ -517,12 +522,23 @@ bool ThreadPool::WorkerThread::operator()(WorkTask& task) const
                 {
                     pool.addInternalTask(WorkTask(task.queryId, pipeline->id, pipeline, tupleBuffer, std::move(task.callback)));
                 }
-                pool.statistic->onEvent(TaskEmit{id, task.queryId, pipeline->id, pipeline->id, taskId, tupleBuffer.getNumberOfTuples()});
+                if (not pipeline->stage->formattingTask)
+                {
+                    pool.statistic->onEvent(
+                        TaskEmit{id, task.queryId, pipeline->id, pipeline->id, taskId, tupleBuffer.getNumberOfTuples(), false});
+                }
             }
 
         );
         pool.statistic->onEvent(TaskExecutionStart{WorkerThread::id, task.queryId, pipeline->id, taskId, task.buf.getNumberOfTuples()});
         pipeline->stage->execute(task.buf, pec);
+        /// After execution the compiled stage has stored the number of parsed tuples on the input buffer. One event
+        /// per task (not per successor) keeps the count a true source-tuple rate; repeated (REPEAT) attempts store 0.
+        if (pipeline->stage->formattingTask)
+        {
+            pool.statistic->onEvent(
+                TaskEmit{id, task.queryId, pipeline->id, pipeline->id, taskId, task.buf.getNumberOfProcessedTuples(), true});
+        }
         pool.statistic->onEvent(TaskExecutionComplete{WorkerThread::id, task.queryId, pipeline->id, taskId});
         return true;
     }

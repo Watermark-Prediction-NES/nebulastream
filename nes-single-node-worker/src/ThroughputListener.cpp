@@ -72,7 +72,14 @@ void ThroughputListener::onEvent(Event event)
     std::visit(
         Overloaded{
             [this](const TaskEmit& taskEmit)
-            { tuplesPerQuery.withWLock([&taskEmit](auto& counts) { counts[taskEmit.queryId] += taskEmit.numberOfTuples; }); },
+            {
+                /// Only formatting tasks carry the parsed source-tuple count, so the reported rate is the
+                /// query's true input rate instead of a plan-dependent multiple of it.
+                if (taskEmit.formattingTask)
+                {
+                    tuplesPerQuery.withWLock([&taskEmit](auto& counts) { counts[taskEmit.queryId] += taskEmit.numberOfProcessedTuples; });
+                }
+            },
             [](const auto&) {}},
         event);
 }
