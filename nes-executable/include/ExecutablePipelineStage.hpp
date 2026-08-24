@@ -43,6 +43,10 @@ public:
 
     friend std::ostream& operator<<(std::ostream& os, const ExecutablePipelineStage& eps) { return eps.toString(os); }
 
+    /// True for pipelines whose root is a raw-scan (input-formatting) operator. Their processed-tuple count is the
+    /// query's true source-tuple rate, which the throughput listener reports.
+    bool formattingTask = false;
+
 protected:
     virtual std::ostream& toString(std::ostream& os) const = 0;
 };

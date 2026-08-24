@@ -33,6 +33,7 @@
 #include <ExecutablePipelineStage.hpp>
 #include <Pipeline.hpp>
 #include <PipelinedQueryPlan.hpp>
+#include <ScanPhysicalOperator.hpp>
 #include <SinkPhysicalOperator.hpp>
 #include <SourceDescriptorPhysicalOperator.hpp>
 #include <options.hpp>
@@ -135,7 +136,12 @@ std::unique_ptr<ExecutablePipelineStage> LowerToCompiledQueryPlanPhase::getStage
             break;
     }
     options.setOption("dump.graph", dumpQueryCompilationIR.isDumpGraphEnabled());
-    return std::make_unique<CompiledExecutablePipelineStage>(pipeline, pipeline->getOperatorHandlers(), options);
+    auto stage = std::make_unique<CompiledExecutablePipelineStage>(pipeline, pipeline->getOperatorHandlers(), options);
+    if (const auto scan = pipeline->getRootOperator().tryGet<ScanPhysicalOperator>())
+    {
+        stage->formattingTask = scan->getIsRawScan();
+    }
+    return stage;
 }
 
 std::shared_ptr<ExecutablePipeline> LowerToCompiledQueryPlanPhase::processOperatorPipeline(const std::shared_ptr<Pipeline>& pipeline)

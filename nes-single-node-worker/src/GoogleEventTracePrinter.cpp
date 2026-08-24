@@ -304,7 +304,7 @@ void GoogleEventTracePrinter::threadRoutine(const std::stop_token& token)
                         taskEmit.fromPipeline.getRawValue(),
                         taskEmit.taskId.getRawValue(),
                         taskEmit.toPipeline.getRawValue(),
-                        taskEmit.numberOfTuples,
+                        taskEmit.numberOfProcessedTuples,
                         taskEmit.fromPipeline,
                         taskEmit.toPipeline,
                         taskEmit.taskId,
