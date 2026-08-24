@@ -45,7 +45,7 @@ nes-asp/data/*.csv
 *.log
 *.undo
 
-scripts/__pycache__
+__pycache__/
 .ccache
 
 # Ignore nix symlinks
@@ -65,3 +65,8 @@ scripts/__pycache__
 
 # Ignore notebook files
 *.ipynb
+!scripts/benchmarking/**/*.ipynb
+
+# Benchmark harness byproducts
+.ipynb_checkpoints/
+scripts/benchmarking/**/results/
