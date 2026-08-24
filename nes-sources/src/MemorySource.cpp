@@ -28,7 +28,6 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
-#include <stdlib.h>
 
 #include <Configurations/Descriptor.hpp>
 #include <Identifiers/Identifier.hpp>
@@ -55,6 +54,7 @@ MemorySource::MemorySource(const SourceDescriptor& sourceDescriptor)
 
 bool MemorySource::setup()
 {
+    /// NOLINTNEXTLINE(misc-include-cleaner): realpath is POSIX, via <cstdlib> as in FileSource.cpp.
     const auto realCSVPath = std::unique_ptr<char, decltype(std::free)*>{realpath(filePath.c_str(), nullptr), std::free};
     if (not realCSVPath)
     {

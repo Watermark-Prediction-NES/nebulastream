@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -61,7 +62,7 @@ constexpr uint64_t NUMBER_OF_BUCKETS = 64;
 constexpr uint64_t PAGE_SIZE = 200;
 constexpr uint64_t NUMBER_OF_ENTRIES = 97;
 
-/// The map no longer carries its own sizing, so every call that needs it is handed this one config.
+/// The map no longer carries its own sizing; every call that needs it gets this config.
 const ChainedHashMapConfig CONFIG{
     .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE,
     .numberOfBuckets = NUMBER_OF_BUCKETS,

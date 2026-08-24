@@ -85,9 +85,8 @@ public:
         std::shared_ptr<std::pmr::memory_resource> memoryResource,
         size_t unpooledMemoryLimitInBytes,
         uint32_t alignment,
-        /// NOLINTNEXTLINE(fuchsia-default-arguments-declarations): the monitor is opt-in, every other caller wants it off.
-        std::optional<std::filesystem::path> monitorFilePath = std::nullopt,
-        std::chrono::milliseconds monitorInterval = std::chrono::milliseconds{100});
+        std::optional<std::filesystem::path> monitorFilePath,
+        std::chrono::milliseconds monitorInterval);
 
     /// Creates a new global buffer manager from a total memory budget. The pooled buffer count and the unpooled
     /// memory limit are derived: unpooledLimit = totalMemoryInBytes * unpooledMemoryFraction, the remaining
@@ -107,8 +106,10 @@ public:
         BufferAlignment alignment,
         uint32_t bufferSize,
         const std::shared_ptr<std::pmr::memory_resource>& memoryResource,
-        std::optional<std::filesystem::path> monitorFilePath,
-        std::chrono::milliseconds monitorInterval);
+        /// NOLINTBEGIN(fuchsia-default-arguments-declarations): the monitor is opt-in.
+        std::optional<std::filesystem::path> monitorFilePath = std::nullopt,
+        std::chrono::milliseconds monitorInterval = std::chrono::milliseconds{100});
+    /// NOLINTEND(fuchsia-default-arguments-declarations)
 
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;

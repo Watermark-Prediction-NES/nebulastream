@@ -15,6 +15,7 @@
 #pragma once
 #include <chrono>
 #include <cstddef>
+#include <utility>
 #include <variant>
 #include <Identifiers/Identifiers.hpp>
 #include <Identifiers/NESStrongType.hpp>

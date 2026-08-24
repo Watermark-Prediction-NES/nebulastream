@@ -28,6 +28,8 @@
 
 #include <Identifiers/Identifiers.hpp>
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMap.hpp>
+#include <Interface/HashMap/ChainedHashMap/ChainedHashMapConfig.hpp>
+#include <Interface/HashMap/HashMap.hpp>
 #include <Interface/PagedVector/PagedVector.hpp>
 #include <Join/HashJoin/HJSlice.hpp>
 #include <Join/NestedLoopJoin/NLJSlice.hpp>
@@ -38,7 +40,6 @@
 #include <Runtime/TupleBuffer.hpp>
 #include <SliceStore/Slice.hpp>
 #include <Util/Logger/LogLevel.hpp>
-#include <Util/Logger/Logger.hpp>
 #include <Util/Logger/impl/NesLogger.hpp>
 #include <gtest/gtest.h>
 #include <BaseUnitTest.hpp>
@@ -126,12 +127,15 @@ PagedVectorSnapshot snapshotPagedVector(const TupleBuffer& mainBuffer)
     PagedVectorSnapshot snapshot;
     const auto pagedVector = PagedVector::load(mainBuffer);
     snapshot.numberOfPages = pagedVector.getNumberOfPages();
+    snapshot.pages.reserve(snapshot.numberOfPages);
+    snapshot.pageChildren.reserve(snapshot.numberOfPages);
     for (uint64_t pageIdx = 0; pageIdx < snapshot.numberOfPages; ++pageIdx)
     {
         const auto page = mainBuffer.loadChildBuffer(ChildBufferIndex{static_cast<uint32_t>(pageIdx)});
         snapshot.pages.push_back(bytesOf(page));
 
         std::vector<std::vector<std::byte>> children;
+        children.reserve(page.getNumberOfChildBuffers());
         for (uint32_t childIdx = 0; childIdx < page.getNumberOfChildBuffers(); ++childIdx)
         {
             children.push_back(bytesOf(page.loadChildBuffer(ChildBufferIndex{childIdx})));
@@ -186,20 +190,31 @@ std::vector<ChainSnapshot> snapshotChains(ChainedHashMap& hashMap)
     return snapshot;
 }
 
-/// The join build side is no longer part of the slice args: HJSlice takes it per call, on the
-/// getOrCreateHashMapBufferRefForSide() that actually needs it.
+/// The map no longer carries its own sizing; every call that needs it gets this config.
+const ChainedHashMapConfig CONFIG{
+    .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE,
+    .numberOfBuckets = NUMBER_OF_BUCKETS,
+    .pageSize = HASH_MAP_PAGE_SIZE,
+    .bloomFilterParams = std::nullopt,
+    .fieldKeys = {},
+    .fieldValues = {},
+    .hashFunction = nullptr};
+
+/// The build side is no longer in the slice args: HJSlice takes it per call instead.
 CreateNewHashMapSliceArgs hjSliceArgs(AbstractBufferProvider& bufferProvider)
 {
-    return CreateNewHashMapSliceArgs{
-        ChainedHashMapConfig{
-            .entrySize = sizeof(ChainedHashMapEntry) + KEY_SIZE + VALUE_SIZE,
-            .numberOfBuckets = NUMBER_OF_BUCKETS,
-            .pageSize = HASH_MAP_PAGE_SIZE,
-            .bloomFilterParams = std::nullopt,
-            .fieldKeys = {},
-            .fieldValues = {},
-            .hashFunction = nullptr},
-        &bufferProvider};
+    return CreateNewHashMapSliceArgs{CONFIG, &bufferProvider};
+}
+
+AbstractHashMapEntry* insert(ChainedHashMap& hashMap, const uint64_t hash, AbstractBufferProvider* bufferProvider)
+{
+    return hashMap.insertEntry(
+        hash,
+        bufferProvider,
+        CONFIG.entrySize,
+        CONFIG.entriesPerPage(),
+        CONFIG.pageSize,
+        ChainedHashMap::calculateMask(CONFIG.numberOfBuckets));
 }
 }
 
@@ -373,7 +388,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceRoundTripsAndChainsStillResolve)
         auto hashMap = ChainedHashMap::load(*buffer);
         for (uint64_t i = 0; i < 60; ++i)
         {
-            auto* const entry = dynamic_cast<ChainedHashMapEntry*>(hashMap.insertEntry((i * 7) % 96, bufferManager.get()));
+            auto* const entry = dynamic_cast<ChainedHashMapEntry*>(insert(hashMap, (i * 7) % 96, bufferManager.get()));
             writePayload(entry, (worker * 1000) + i);
         }
         ASSERT_GT(hashMap.getNumberOfPages(), 1U) << "test is pointless if every map fits on one page";
@@ -413,7 +428,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceLeavesSlotsNoBuildWorkerEverTouched)
     auto hashMap = ChainedHashMap::load(*touched);
     for (uint64_t i = 0; i < 10; ++i)
     {
-        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(hashMap.insertEntry(i, bufferManager.get()));
+        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(insert(hashMap, i, bufferManager.get()));
         writePayload(entry, i);
     }
     const auto chainsBefore = snapshotChains(hashMap);
@@ -467,7 +482,7 @@ TEST_F(ReducibleSliceTest, HashMapSliceKeepsTheTwoJoinSidesApart)
     {
         const auto* const buffer = slice.getOrCreateHashMapBufferRefForSide(WorkerThreadId(0), side, *bufferManager);
         auto hashMap = ChainedHashMap::load(*buffer);
-        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(hashMap.insertEntry(1, bufferManager.get()));
+        auto* const entry = dynamic_cast<ChainedHashMapEntry*>(insert(hashMap, 1, bufferManager.get()));
         writePayload(entry, side == JoinBuildSideType::Left ? 111 : 222);
     }
 
