@@ -46,7 +46,7 @@
 namespace NES
 {
 
-void AggregationProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> AggregationProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     /// As this operator functions as a scan, we have to set the execution context for this pipeline
     executionCtx.watermarkTs = recordBuffer.getWatermarkTs();
@@ -70,7 +70,7 @@ void AggregationProbePhysicalOperator::open(ExecutionContext& executionCtx, Reco
     /// sequence number reaches the downstream watermark processor.
     if (numberOfHashMaps == 0)
     {
-        return;
+        return recordBuffer.getNumRecords();
     }
 
     /// create final hash map and pin it. Its sizing is the same as the per-worker maps it merges, and that is
@@ -213,6 +213,7 @@ void AggregationProbePhysicalOperator::open(ExecutionContext& executionCtx, Reco
             emittedAggregationWindow->~EmittedAggregationWindow();
         },
         aggregationWindowRef);
+    return recordBuffer.getNumRecords();
 }
 
 AggregationProbePhysicalOperator::AggregationProbePhysicalOperator(

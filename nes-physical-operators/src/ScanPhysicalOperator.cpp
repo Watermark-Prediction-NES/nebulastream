@@ -41,14 +41,14 @@ ScanPhysicalOperator::ScanPhysicalOperator(
 {
 }
 
-void ScanPhysicalOperator::rawScan(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> ScanPhysicalOperator::rawScan(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     auto inputFormatterBufferRef = std::dynamic_pointer_cast<InputFormatter>(this->bufferRef);
 
     if (not inputFormatterBufferRef->indexBuffer(recordBuffer, executionCtx.pipelineMemoryProvider.arena))
     {
         executionCtx.setOpenReturnState(OpenReturnState::REPEAT);
-        return;
+        return nautilus::val<uint64_t>{0};
     }
 
     /// call open on all child operators
@@ -56,15 +56,15 @@ void ScanPhysicalOperator::rawScan(ExecutionContext& executionCtx, RecordBuffer&
     /// A child operator may defer the whole buffer (OpenReturnState::REPEAT); no record must be processed then.
     if (executionCtx.getOpenReturnState() == OpenReturnState::REPEAT)
     {
-        return;
+        return nautilus::val<uint64_t>{0};
     }
 
     /// process buffer
     const auto executeChildLambda = [this](ExecutionContext& executionCtx, Record& record) { executeChild(executionCtx, record); };
-    inputFormatterBufferRef->readBuffer(executionCtx, recordBuffer, executeChildLambda);
+    return inputFormatterBufferRef->readBuffer(executionCtx, recordBuffer, executeChildLambda);
 }
 
-void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     /// initialize global state variables to keep track of the watermark ts and the origin id
     executionCtx.watermarkTs = recordBuffer.getWatermarkTs();
@@ -77,8 +77,7 @@ void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& re
 
     if (isRawScan)
     {
-        rawScan(executionCtx, recordBuffer);
-        return;
+        return rawScan(executionCtx, recordBuffer);
     }
     /// call open on all child operators
     openChild(executionCtx, recordBuffer);
@@ -87,7 +86,7 @@ void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& re
     /// records twice.
     if (executionCtx.getOpenReturnState() == OpenReturnState::REPEAT)
     {
-        return;
+        return nautilus::val<uint64_t>{0};
     }
     /// iterate over records in buffer
     auto numberOfRecords = recordBuffer.getNumRecords();
@@ -96,6 +95,7 @@ void ScanPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& re
         auto record = bufferRef->readRecord(projections, recordBuffer, i);
         executeChild(executionCtx, record);
     }
+    return numberOfRecords;
 }
 
 std::optional<PhysicalOperator> ScanPhysicalOperator::getChild() const

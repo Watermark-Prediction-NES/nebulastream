@@ -92,7 +92,7 @@ StreamJoinProbePhysicalOperator::StreamJoinProbePhysicalOperator(
 {
 }
 
-void StreamJoinProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> StreamJoinProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     executionCtx.watermarkTs = recordBuffer.getWatermarkTs();
     executionCtx.currentTs = recordBuffer.getCreatingTs();
@@ -101,6 +101,7 @@ void StreamJoinProbePhysicalOperator::open(ExecutionContext& executionCtx, Recor
     executionCtx.lastChunk = recordBuffer.isLastChunk();
     executionCtx.originId = recordBuffer.getOriginId();
     openChild(executionCtx, recordBuffer);
+    return recordBuffer.getNumRecords();
 }
 
 Record StreamJoinProbePhysicalOperator::createJoinedRecord(

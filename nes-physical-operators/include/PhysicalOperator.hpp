@@ -36,6 +36,7 @@
 #include <CompilationContext.hpp>
 #include <ErrorHandling.hpp>
 #include <nameof.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -66,7 +67,8 @@ struct PhysicalOperatorConcept
 
     /// Opens the operator for processing records.
     /// This is called before each batch of records is processed.
-    virtual void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
+    /// Returns the number of processed tuples.
+    virtual nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
 
     /// Closes the operator after processing records.
     /// This is called after each batch of records is processed.
@@ -85,7 +87,7 @@ struct PhysicalOperatorConcept
 protected:
     /// Helper classes to propagate to the child
     void setupChild(ExecutionContext& executionCtx, CompilationContext& compilationContext) const;
-    void openChild(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
+    nautilus::val<uint64_t> openChild(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
     void closeChild(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
     void executeChild(ExecutionContext& executionCtx, Record& record) const;
     void terminateChild(ExecutionContext& executionCtx) const;
@@ -121,7 +123,7 @@ struct PhysicalOperator
     [[nodiscard]] PhysicalOperator withChild(PhysicalOperator child) const;
 
     void setup(ExecutionContext& executionCtx, CompilationContext& compilationContext) const;
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
     void close(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
     void terminate(ExecutionContext& executionCtx) const;
     void execute(ExecutionContext& executionCtx, Record& record) const;
@@ -193,7 +195,10 @@ private:
             data.setup(executionCtx, compilationContext);
         }
 
-        void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override { data.open(executionCtx, recordBuffer); }
+        nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override
+        {
+            return data.open(executionCtx, recordBuffer);
+        }
 
         void close(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override { data.close(executionCtx, recordBuffer); }
 

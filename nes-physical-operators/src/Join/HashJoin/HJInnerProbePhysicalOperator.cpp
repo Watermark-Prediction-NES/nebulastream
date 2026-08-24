@@ -32,6 +32,7 @@
 #include <SliceStore/WindowSlicesStoreInterface.hpp>
 #include <Time/Timestamp.hpp>
 #include <ExecutionContext.hpp>
+#include <val_arith.hpp>
 #include <val_ptr.hpp>
 
 namespace NES
@@ -58,7 +59,7 @@ HJInnerProbePhysicalOperator::HJInnerProbePhysicalOperator(
 {
 }
 
-void HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     StreamJoinProbePhysicalOperator::open(executionCtx, recordBuffer);
 
@@ -76,5 +77,6 @@ void HJInnerProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBu
 
     /// The hash map buffers themselves are stored as child buffers of the record buffer, not as raw pointers in the trigger struct
     performMatchPairsProbe(recordBuffer.getReference(), leftNumberOfHashMaps, rightNumberOfHashMaps, executionCtx, windowStart, windowEnd);
+    return recordBuffer.getNumRecords();
 }
 }

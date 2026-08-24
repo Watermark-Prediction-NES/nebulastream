@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 
+#include <Interface/RecordBuffer.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <SliceStore/SliceStoreRef.hpp>
 #include <Watermark/TimeFunction.hpp>
@@ -25,6 +26,7 @@
 #include <OperatorState.hpp>
 #include <PhysicalOperator.hpp>
 #include <val.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -56,7 +58,7 @@ public:
     void setup(ExecutionContext& executionCtx, CompilationContext& compilationContext) const override;
 
     /// Initializes the time function, e.g., method that extracts the timestamp from a record
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
     /// Passes emits slices that are ready to the second phase (probe) for further processing
     void close(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;

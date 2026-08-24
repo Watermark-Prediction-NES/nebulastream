@@ -146,7 +146,7 @@ void HJOuterProbePhysicalOperator::performNullFillProbe(
 }
 
 /// NOLINTNEXTLINE(readability-function-cognitive-complexity) outer join dispatches by task type and delegates to inner/null-fill probes
-void HJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> HJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     StreamJoinProbePhysicalOperator::open(executionCtx, recordBuffer);
 
@@ -219,5 +219,6 @@ void HJOuterProbePhysicalOperator::open(ExecutionContext& executionCtx, RecordBu
             { throw NotImplemented("Using unknown probeTaskType {}", magic_enum::enum_name(unknownProbeTaskType)); },
             probeTaskType);
     }
+    return recordBuffer.getNumRecords();
 }
 }

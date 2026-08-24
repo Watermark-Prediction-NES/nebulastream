@@ -52,7 +52,7 @@ public:
         ChainedHashMapConfig leftHashMapBasedOptions,
         ChainedHashMapConfig rightHashMapBasedOptions);
 
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
     static constexpr bool supportsJoinType(JoinLogicalOperator::JoinType joinType) noexcept
     {

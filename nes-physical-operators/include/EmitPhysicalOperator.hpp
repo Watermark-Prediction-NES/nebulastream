@@ -25,6 +25,7 @@
 #include <CompilationContext.hpp>
 #include <ExecutionContext.hpp>
 #include <PhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -40,7 +41,7 @@ public:
 
     void terminate(ExecutionContext&) const override { /*noop*/ }
 
-    void open(ExecutionContext& ctx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& ctx, RecordBuffer& recordBuffer) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
     void close(ExecutionContext& ctx, RecordBuffer& recordBuffer) const override;
     void emitRecordBuffer(

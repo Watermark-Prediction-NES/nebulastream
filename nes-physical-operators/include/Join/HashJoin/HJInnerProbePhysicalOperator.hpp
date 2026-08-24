@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <Functions/PhysicalFunction.hpp>
 #include <Interface/HashMap/ChainedHashMap/ChainedHashMapConfig.hpp>
@@ -25,6 +26,7 @@
 #include <Operators/Windows/WindowMetaData.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <ExecutionContext.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -43,7 +45,7 @@ public:
         ChainedHashMapConfig leftHashMapBasedOptions,
         ChainedHashMapConfig rightHashMapBasedOptions);
 
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
     static constexpr bool supportsJoinType(JoinLogicalOperator::JoinType joinType) noexcept
     {
