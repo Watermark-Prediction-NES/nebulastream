@@ -76,7 +76,7 @@ void DefaultTimeBasedSliceStore::poolRetiredSlice(std::shared_ptr<Slice> slice, 
     {
         return;
     }
-    if (const auto pool = slicePool.wlock(); pool->size() < slicePoolCapacity)
+    if (const auto pool = poolShard().wlock(); pool->size() < slicePoolCapacity)
     {
         pool->push_back(std::move(slice));
     }
@@ -106,7 +106,9 @@ DefaultTimeBasedSliceStore::getSlicesOrCreate(const Timestamp timestamp, const S
     std::shared_ptr<Slice> recycledCandidate;
     if (sliceRecyclingEnabled)
     {
-        if (const auto pool = slicePool.wlock(); not pool->empty())
+        /// Own shard only. An empty shard falls through to a fresh allocation rather than scanning the
+        /// others: the scan would reintroduce exactly the cross-thread traffic the sharding removes.
+        if (const auto pool = poolShard().wlock(); not pool->empty())
         {
             recycledCandidate = std::move(pool->back());
             pool->pop_back();
@@ -441,7 +443,11 @@ void DefaultTimeBasedSliceStore::deleteState()
     auto [slicesWriteLocked, windowsWriteLocked] = acquireLocked(slices, windows);
     slicesWriteLocked->clear();
     windowsWriteLocked->clear();
-    slicePool.wlock()->clear();
+    /// Every shard, not just the caller's: deleteState must leave nothing behind on any thread.
+    for (auto& shard : slicePool)
+    {
+        shard.wlock()->clear();
+    }
 }
 
 void DefaultTimeBasedSliceStore::incrementNumberOfInputPipelines()
