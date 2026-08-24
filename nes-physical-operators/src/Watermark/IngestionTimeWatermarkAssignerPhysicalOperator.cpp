@@ -14,6 +14,7 @@
 
 #include <Watermark/IngestionTimeWatermarkAssignerPhysicalOperator.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <Interface/Record.hpp>
@@ -21,6 +22,7 @@
 #include <Watermark/TimeFunction.hpp>
 #include <ExecutionContext.hpp>
 #include <PhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -29,9 +31,10 @@ IngestionTimeWatermarkAssignerPhysicalOperator::IngestionTimeWatermarkAssignerPh
     IngestionTimeFunction timeFunction, const bool trackMinTs)
     : timeFunction(std::move(timeFunction)), trackMinTs(trackMinTs) { };
 
-void IngestionTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t>
+IngestionTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
-    openChild(executionCtx, recordBuffer);
+    auto numberOfProcessedTuples = openChild(executionCtx, recordBuffer);
     timeFunction.open(executionCtx, recordBuffer);
     auto emptyRecord = Record();
     const auto tsField = [this](ExecutionContext& executionCtx)
@@ -48,6 +51,7 @@ void IngestionTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& exec
         /// With ingestion time every record in the buffer carries the same timestamp, so min == max.
         executionCtx.minTs = tsField;
     }
+    return numberOfProcessedTuples;
 }
 
 void IngestionTimeWatermarkAssignerPhysicalOperator::execute(ExecutionContext& executionCtx, Record& record) const

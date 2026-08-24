@@ -13,6 +13,7 @@
 */
 #include <WindowBuildPhysicalOperator.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -29,6 +30,7 @@
 #include <PhysicalOperator.hpp>
 #include <WindowBasedOperatorHandler.hpp>
 #include <function.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -91,7 +93,7 @@ void WindowBuildPhysicalOperator::setup(ExecutionContext& executionCtx, Compilat
     sliceStoreRef->setupSliceStore(executionCtx.pipelineContext);
 }
 
-void WindowBuildPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> WindowBuildPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
     /// Initializing the time function
     timeFunction->open(executionCtx, recordBuffer);
@@ -112,13 +114,14 @@ void WindowBuildPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuf
             {
                 executionCtx.repeatDelayMs = retryDelayMs;
                 executionCtx.setOpenReturnState(OpenReturnState::REPEAT);
-                return;
+                return nautilus::val<uint64_t>{0};
             }
         }
     }
 
     /// Creating the local state for the window operator build.
     executionCtx.setLocalOperatorState(id, std::make_unique<WindowOperatorBuildLocalState>(operatorHandler));
+    return nautilus::val<uint64_t>{0};
 }
 
 void WindowBuildPhysicalOperator::terminate(ExecutionContext& executionCtx) const

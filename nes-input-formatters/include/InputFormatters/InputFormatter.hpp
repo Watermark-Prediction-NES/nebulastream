@@ -90,7 +90,8 @@ public:
 
     /// Executes the second phase, which iterates over a (raw) buffer, reading specific records and fields from a (raw) buffer
     /// Relies on the index created in the first phase (indexBuffer), which it accesses through the static_thread local member
-    void readBuffer(
+    /// Returns the number of parsed (processed) tuples.
+    nautilus::val<uint64_t> readBuffer(
         ExecutionContext& executionCtx,
         const RecordBuffer& recordBuffer,
         const std::function<void(ExecutionContext& executionCtx, Record& record)>& executeChild);

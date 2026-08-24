@@ -12,10 +12,13 @@
     limitations under the License.
 */
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <Interface/RecordBuffer.hpp>
 #include <Watermark/TimeFunction.hpp>
 #include <PhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -29,7 +32,7 @@ public:
     /// trackMinTs additionally maintains the buffer's minimum event timestamp for slice-group creation.
     /// It is a tracing-time constant: when false, the compiled code is identical to not tracking at all.
     explicit EventTimeWatermarkAssignerPhysicalOperator(EventTimeFunction timeFunction, bool trackMinTs);
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
     void close(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     [[nodiscard]] std::optional<PhysicalOperator> getChild() const override;

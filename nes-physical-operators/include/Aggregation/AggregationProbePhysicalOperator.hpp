@@ -14,14 +14,17 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include <Aggregation/Function/AggregationPhysicalFunction.hpp>
 #include <Interface/RecordBuffer.hpp>
 #include <Operators/Windows/WindowMetaData.hpp>
 #include <Runtime/Execution/OperatorHandler.hpp>
+#include <ExecutionContext.hpp>
 #include <HashMapOptions.hpp>
 #include <WindowProbePhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -34,7 +37,7 @@ public:
         std::vector<std::shared_ptr<AggregationPhysicalFunction>> aggregationPhysicalFunctions,
         OperatorHandlerId operatorHandlerId,
         WindowMetaData windowMetaData);
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
 private:
     std::vector<std::shared_ptr<AggregationPhysicalFunction>> aggregationPhysicalFunctions;

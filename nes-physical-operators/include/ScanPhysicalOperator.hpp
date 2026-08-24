@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -21,6 +22,7 @@
 #include <Interface/Record.hpp>
 #include <Interface/RecordBuffer.hpp>
 #include <PhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -32,9 +34,11 @@ class ScanPhysicalOperator final : public PhysicalOperatorConcept
 public:
     explicit ScanPhysicalOperator(std::shared_ptr<TupleBufferRef> bufferRef, std::vector<Record::RecordFieldIdentifier> projections);
 
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
     [[nodiscard]] std::optional<PhysicalOperator> getChild() const override;
     void setChild(PhysicalOperator child) override;
+
+    [[nodiscard]] bool getIsRawScan() const { return isRawScan; }
 
 private:
     std::shared_ptr<TupleBufferRef> bufferRef;
@@ -42,7 +46,7 @@ private:
     std::optional<PhysicalOperator> child;
     bool isRawScan = false;
 
-    void rawScan(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
+    nautilus::val<uint64_t> rawScan(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const;
 };
 
 }

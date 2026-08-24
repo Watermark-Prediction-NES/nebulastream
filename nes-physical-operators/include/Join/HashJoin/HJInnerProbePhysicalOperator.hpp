@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <Functions/PhysicalFunction.hpp>
 #include <Interface/PagedVector/PagedVectorRef.hpp>
@@ -25,6 +26,7 @@
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <ExecutionContext.hpp>
 #include <HashMapOptions.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -43,7 +45,7 @@ public:
         HashMapOptions leftHashMapBasedOptions,
         HashMapOptions rightHashMapBasedOptions);
 
-    void open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
+    nautilus::val<uint64_t> open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const override;
 
     static constexpr bool supportsJoinType(JoinLogicalOperator::JoinType joinType) noexcept
     {

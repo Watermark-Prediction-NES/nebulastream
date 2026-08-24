@@ -13,6 +13,7 @@
 */
 #include <Watermark/EventTimeWatermarkAssignerPhysicalOperator.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -23,6 +24,7 @@
 #include <Watermark/TimeFunction.hpp>
 #include <ExecutionContext.hpp>
 #include <PhysicalOperator.hpp>
+#include <val_arith.hpp>
 
 namespace NES
 {
@@ -31,15 +33,16 @@ EventTimeWatermarkAssignerPhysicalOperator::EventTimeWatermarkAssignerPhysicalOp
     EventTimeFunction timeFunction, const bool trackMinTs)
     : timeFunction(std::move(timeFunction)), trackMinTs(trackMinTs) { };
 
-void EventTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
+nautilus::val<uint64_t> EventTimeWatermarkAssignerPhysicalOperator::open(ExecutionContext& executionCtx, RecordBuffer& recordBuffer) const
 {
-    openChild(executionCtx, recordBuffer);
+    auto numberOfProcessedTuples = openChild(executionCtx, recordBuffer);
     executionCtx.watermarkTs = nautilus::val<Timestamp>(Timestamp(Timestamp::INITIAL_VALUE));
     if (trackMinTs)
     {
         executionCtx.minTs = nautilus::val<Timestamp>(Timestamp(Timestamp::INVALID_VALUE));
     }
     timeFunction.open(executionCtx, recordBuffer);
+    return numberOfProcessedTuples;
 }
 
 void EventTimeWatermarkAssignerPhysicalOperator::execute(ExecutionContext& ctx, Record& record) const
