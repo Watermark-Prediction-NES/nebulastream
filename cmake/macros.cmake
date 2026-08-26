@@ -191,12 +191,17 @@ function(add_e2e_test)
 
     set(_fixtures E2eBinaries)
     set(_labels "")
+    set(_resource_lock "")
     if (ARG_DOCKER_COMPOSE)
         list(APPEND _fixtures RuntimeBaseImage)
         set(_labels DockerCompose)
+        # The three suites driving nes-cli share one image prefix, and each setup_file force-removes that
+        # glob, deleting a live sibling's images. Serialize them; the whole label is ~7 minutes.
+        set(_resource_lock DockerDaemon)
     endif ()
     set_tests_properties(${ARG_NAME} PROPERTIES
         FIXTURES_REQUIRED "${_fixtures}"
         LABELS "${_labels}"
+        RESOURCE_LOCK "${_resource_lock}"
     )
 endfunction()

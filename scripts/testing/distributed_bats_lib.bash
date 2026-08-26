@@ -250,17 +250,36 @@ assert_json_contains() {
 # Layer 2 — preset for cli/repl/MQTT distributed suites
 # ---------------------------------------------------------------------------
 
+# Derives a suite's docker identity. The suite name defaults to the binary's, which is only unique
+# when one suite drives that binary -- several drive nes-cli, so those pass their own name. Cleanup
+# below matches on these, so two suites sharing them tear down each other's containers and images.
+# Pure: sets names and touches nothing else, so bats_lib.bats can call it without a docker daemon.
+nes_derive_image_names() {
+  local bin_path="$1"
+  local suite="${2:-}"
+  local bin_name
+  bin_name=$(basename "$bin_path")
+  local bin_suffix="${bin_name#nes-}"
+  : "${suite:=$bin_suffix}"
+
+  export NES_BATS_TEST_LABEL="distributed-${suite}"
+  export NES_BATS_WORKER_PREFIX="nes-worker-${suite}-test"
+  export NES_BATS_APP_PREFIX="nes-${suite}-image"
+  # Stays keyed on the binary, not the suite: the compose files read $CLI_IMAGE by that name.
+  export NES_BATS_APP_IMAGE_VAR="${bin_suffix^^}_IMAGE"
+}
+
 nes_distributed_setup_file() {
-  # Pass the client binary path (e.g. "$NES_CLI"). Convention: nes-cli ->
-  # distributed-cli / nes-worker-cli-test / nes-cli-image / CLI_IMAGE.
+  # Pass the client binary path (e.g. "$NES_CLI"), plus a suite name when another suite already
+  # drives that binary. Convention: nes-cli -> distributed-cli / nes-worker-cli-test / nes-cli-image
+  # / CLI_IMAGE.
   local bin_path="$1"
   local bin_name
   bin_name=$(basename "$bin_path")
-  local suffix="${bin_name#nes-}"
-  local test_label="distributed-${suffix}"
-  local worker_prefix="nes-worker-${suffix}-test"
-  local app_prefix="${bin_name}-image"
-  export NES_BATS_APP_IMAGE_VAR="${suffix^^}_IMAGE"
+  nes_derive_image_names "$bin_path" "${2:-}"
+  local test_label="$NES_BATS_TEST_LABEL"
+  local worker_prefix="$NES_BATS_WORKER_PREFIX"
+  local app_prefix="$NES_BATS_APP_PREFIX"
 
   nes_cleanup_leaked_resources "$test_label" "${worker_prefix}-*" "${app_prefix}-*"
 

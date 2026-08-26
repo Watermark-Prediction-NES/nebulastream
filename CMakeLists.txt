@@ -235,6 +235,11 @@ if (NES_ENABLES_TESTS)
                 LABELS "DockerCompose"
         )
     endif ()
+    # Pure-shell guard for the bats helper library. No docker, so it runs in the fast unit job.
+    add_e2e_test(
+            NAME bats-lib-test
+            BATS_FILE scripts/testing/tests/bats_lib.bats
+    )
     if (CODE_COVERAGE)
         include(cmake/CodeCoverage.cmake)
         add_code_coverage_all_targets(EXCLUDE ${CMAKE_BINARY_DIR}/* tests/*)
