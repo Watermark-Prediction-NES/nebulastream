@@ -151,6 +151,10 @@ if (NOT CODE_COVERAGE)
 endif (NOT CODE_COVERAGE)
 
 
+# The large systests each claim one largeslot (see NES_MAX_CONCURRENT_LARGE_TESTS in the root CMakeLists)
+# so only a couple overlap whatever -j is given, and carry a negative COST so ctest dispatches them after
+# everything else: other tests default to cost 0 and ctest runs tests in descending cost order. That orders
+# the dispatch, it does not fence them off, so the tail of the ordinary tests can still overlap them.
 if (ENABLE_LARGE_TESTS)
     message(STATUS "Large scale tests enabled")
 
@@ -176,7 +180,7 @@ if (ENABLE_LARGE_TESTS)
                     # currently, 4 worker threads perform the best on the large systests (avoids lock contention on NEXMARK Query 5)
                     NAME ${largeTestName}
                     COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH} --groups large --exclude-groups benchmark_memory --optimizer join_strategy=${joinStrategy}  -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=${LARGE_TEST_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${LARGE_TEST_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=true ${sliceFlagArgs})
-            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4 RESOURCE_GROUPS "largeslot:1" COST -1)
         endforeach ()
     endforeach ()
 
@@ -184,7 +188,7 @@ if (ENABLE_LARGE_TESTS)
             # currently, 16 worker threads perform the best on the large systests (avoids lock contention on NEXMARK Query 5)
             NAME systest_large_benchmark_${joinStrategy}
             COMMAND systest -b --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_benchmark_${joinStrategy} --data ${EXPANDED_TEST_DATA_PATH} --groups large --exclude-groups benchmark_memory --optimizer join_strategy=${joinStrategy}  -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=16 --worker.total_memory_in_bytes=${LARGE_TEST_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${LARGE_TEST_UNPOOLED_FRACTION} --worker.default_query_execution.slice_cache.enable_slice_cache=true)
-    set_tests_properties(systest_large_benchmark_${joinStrategy} PROPERTIES LABELS "Systest" PROCESSORS 16)
+    set_tests_properties(systest_large_benchmark_${joinStrategy} PROPERTIES LABELS "Systest" PROCESSORS 16 RESOURCE_GROUPS "largeslot:1" COST -1)
 
     # Running here the Nexmark.test queries with NLJ to test it for larger data sets but the input data size
     # is still small enough to finish the test in minutes.
@@ -195,7 +199,7 @@ if (ENABLE_LARGE_TESTS)
             ExternalData_Add_Test(TEST_DATA_LARGE
                     NAME ${largeTestName}
                     COMMAND systest -n 6 --show-query-performance --workingDir=${CMAKE_CURRENT_BINARY_DIR}/large_scale_${joinStrategy}_groupCreation_${enableGroupCreation}_recycling_${enableSliceRecycling} --data ${EXPANDED_TEST_DATA_PATH} -t ${CMAKE_CURRENT_SOURCE_DIR}/../benchmark/Nexmark.test:05 --optimizer join_strategy=${joinStrategy} -- --worker.default_query_execution.execution_mode=COMPILER --worker.query_engine.number_of_worker_threads=4 --worker.total_memory_in_bytes=16384000000 --worker.default_query_execution.slice_cache.enable_slice_cache=true --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation} --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
-            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4)
+            set_tests_properties(${largeTestName} PROPERTIES LABELS "Systest" PROCESSORS 4 RESOURCE_GROUPS "largeslot:1" COST -1)
         endforeach ()
     endforeach ()
 

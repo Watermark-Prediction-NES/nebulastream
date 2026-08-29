@@ -37,7 +37,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Benchmark")
     set(NES_BUILD_NATIVE ON)
     set(NES_LOG_LEVEL "LEVEL_NONE" CACHE STRING "LogLevel")
     # CMake only auto-populates -O3 -DNDEBUG for the built-in configs (Debug/Release/...); set them for the custom Benchmark config explicitly.
-    set(CMAKE_C_FLAGS_BENCHMARK   "-O3 -DNDEBUG" CACHE STRING "Benchmark C flags"   FORCE)
+    set(CMAKE_C_FLAGS_BENCHMARK "-O3 -DNDEBUG" CACHE STRING "Benchmark C flags" FORCE)
     set(CMAKE_CXX_FLAGS_BENCHMARK "-O3 -DNDEBUG" CACHE STRING "Benchmark C++ flags" FORCE)
     message(STATUS "Building without any asserts, invariants or preconditions enabled!")
     message(STATUS "NES_BUILD_NATIVE enabling by default in Benchmark!")
@@ -222,6 +222,22 @@ if (NES_ENABLES_TESTS)
     set(GTEST_LIBRARIES ${GTEST_LIBRARIES} ${LIBRARIES})
     # Add tests with command
     enable_testing()
+
+    # A counted slot the systest_large_* tests claim one of each, so no more than this many overlap
+    # whatever -j ctest is given. They each start a worker sized by LARGE_TEST_TOTAL_MEMORY_BYTES, which
+    # the guard in nes-systests/systest/CMakeLists.txt already assumes fits in RAM on its own.
+    set(NES_MAX_CONCURRENT_LARGE_TESTS 2 CACHE STRING
+            "How many systest_large_* tests may run at once, regardless of ctest -j")
+    file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/nes-test-resources.json" CONTENT [[{
+  "version": { "major": 1, "minor": 0 },
+  "local": [ { "largeslot": [ { "id": "0", "slots": @NES_MAX_CONCURRENT_LARGE_TESTS@ } ] } ]
+}
+]] @ONLY)
+    # RESOURCE_GROUPS does nothing unless ctest is handed this file. Naming it here is what lets a plain
+    # `ctest` honour it: the CTest module records it in DartConfiguration.tcl.
+    set(CTEST_RESOURCE_SPEC_FILE "${CMAKE_BINARY_DIR}/nes-test-resources.json")
+    include(CTest)
+
     message(STATUS "Tests are enabled")
     if (ENABLE_DOCKER_TESTS)
         add_test(NAME build-runtime-base-image
