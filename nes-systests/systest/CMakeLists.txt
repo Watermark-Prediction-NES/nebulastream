@@ -275,10 +275,16 @@ if (NOT CODE_COVERAGE)
                 set(sliceFlagArgs
                         --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
                         --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                # The nested loop join does not share the hash join lowering, so its tests cannot run under NLJ.
+                if (joinStrategy STREQUAL NESTED_LOOP_JOIN)
+                    set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS_NLJ})
+                else ()
+                    set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS})
+                endif ()
                 set(stateReductionTestName systest_state_reduction_${joinStrategy}_${sliceFlagSuffix})
                 ExternalData_Add_Test(test-data
                         NAME ${stateReductionTestName}
-                        COMMAND systest -n 6 --show-query-performance --groups StateReduction --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                        COMMAND systest -n 6 --show-query-performance --groups StateReduction --exclude-groups ${joinExcludeGroups} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
                         --optimizer join_strategy=${joinStrategy}
                         --
                         --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
@@ -304,10 +310,16 @@ if (NOT CODE_COVERAGE)
                         --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
                         --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
                 foreach (joinStrategy IN ITEMS NESTED_LOOP_JOIN HASH_JOIN)
+                    # The nested loop join does not share the hash join lowering, so its tests cannot run under NLJ.
+                    if (joinStrategy STREQUAL NESTED_LOOP_JOIN)
+                        set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS_NLJ})
+                    else ()
+                        set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS})
+                    endif ()
                     set(branchTestName systest_state_reduction_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix})
                     ExternalData_Add_Test(test-data
                             NAME ${branchTestName}
-                            COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                            COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${joinExcludeGroups} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_${stateReductionBranch}_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
                             --optimizer join_strategy=${joinStrategy}
                             --
                             --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
@@ -344,10 +356,16 @@ if (NOT CODE_COVERAGE)
                 set(sliceFlagArgs
                         --worker.default_query_execution.slice_store.enable_slice_group_creation=${enableGroupCreation}
                         --worker.default_query_execution.slice_store.enable_slice_recycling=${enableSliceRecycling})
+                # The nested loop join does not share the hash join lowering, so its tests cannot run under NLJ.
+                if (joinStrategy STREQUAL NESTED_LOOP_JOIN)
+                    set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS_NLJ})
+                else ()
+                    set(joinExcludeGroups ${SYSTEST_EXCLUDE_GROUPS})
+                endif ()
                 set(budgetTestName systest_state_reduction_budget_${joinStrategy}_${sliceFlagSuffix})
                 ExternalData_Add_Test(test-data
                         NAME ${budgetTestName}
-                        COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${SYSTEST_EXCLUDE_GROUPS} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_budget_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
+                        COMMAND systest -n 6 --show-query-performance --groups Join --exclude-groups ${joinExcludeGroups} --workingDir=${CMAKE_CURRENT_BINARY_DIR}/state_reduction_budget_${joinStrategy}_${sliceFlagSuffix} --data ${EXPANDED_TEST_DATA_PATH}
                         --optimizer join_strategy=${joinStrategy}
                         --
                         --worker.query_engine.number_of_worker_threads=4 --worker.default_query_execution.execution_mode=INTERPRETER --worker.total_memory_in_bytes=${SYSTEST_JOIN_TOTAL_MEMORY_BYTES} --worker.unpooled_memory_fraction=${SYSTEST_JOIN_UNPOOLED_FRACTION}
